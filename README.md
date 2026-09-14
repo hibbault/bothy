@@ -100,6 +100,12 @@ real inference:
 make devnet          # or: COMPOSE_PROFILES=mock docker compose up --build
 ```
 
+Windows without `make` (PowerShell, Docker Desktop running):
+
+```powershell
+$env:COMPOSE_PROFILES = "mock"; docker compose up --build
+```
+
 ```
 discovery    :8080   registry — hosts announce, clients look up
 engine-mock  :11434  a fake engine that speaks enough OpenAI/Ollama to be useful

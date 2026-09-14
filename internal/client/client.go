@@ -301,7 +301,13 @@ func (c *Client) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		status["host"] = c.target.Host
 		status["model"] = c.entry.Model
 		status["digest"] = c.entry.Digest
-		status["digest_verified"] = model.EqualDigest(c.cfg.ExpectedDigest, c.entry.Digest)
+		// No required digest means any host satisfies the policy, so the
+		// connection counts as verified. (EqualDigest deliberately reports
+		// two empty digests as unequal — "unknown" must never read as
+		// "verified" — but that is about comparing digests, not about
+		// whether this connection met its requirement.)
+		status["digest_verified"] = strings.TrimSpace(c.cfg.ExpectedDigest) == "" ||
+			model.EqualDigest(c.cfg.ExpectedDigest, c.entry.Digest)
 	}
 	httpx.JSON(w, http.StatusOK, status)
 }

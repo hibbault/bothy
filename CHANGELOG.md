@@ -10,14 +10,44 @@ a connection if you care.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.1] - 2026-09-14
+
+A release about verification rather than features. Nothing changed for anyone
+sharing or borrowing a GPU; what changed is that the parts of the stack nobody
+had ever run now run on every push, and one accounting gap those runs exposed was
+fixed.
+
+### Added
+
+- **The compose devnet runs in CI.** It builds the image, brings all four
+  containers up, and then asserts a completion proxied through the client, a
+  `401` without the share key, a registry entry and a metered usage row. Until
+  now the profiles had only ever been described.
+- **The Python example runs in CI, against a live host** — a registry lookup,
+  digests, a missing-key refusal, and a digest mismatch. That makes
+  [PROTOCOL.md](PROTOCOL.md)'s claim that another language is a peer rather than a
+  port into something that fails loudly if the protocol drifts.
+- **`make dist`** builds the release artifact set locally, and `bothy version` is
+  stamped at build time, so a binary can say which release it is.
+
 ### Fixed
 
-- Streamed replies are counted. The mock engine reported token usage only on
+- **Streamed replies are counted.** The mock engine reported token usage only on
   whole responses, so a streamed request could only ever be recorded as
   `unmetered_responses` — and streaming is how most interactive use arrives, so
-  the one path that could not be counted was the common one. The mock now closes
-  a stream with usage, as Ollama does and as OpenAI does when a client asks, with
-  a test and a CI assertion holding it there.
+  the one path that could not be counted was the common one. The mock now closes a
+  stream with usage, as Ollama does and as an OpenAI-compatible engine does when a
+  client asks for it.
+
+### Notes
+
+- An engine that reports streamed usage only when it is asked
+  (`stream_options.include_usage`) can still leave a streamed reply unmetered. The
+  host does not inject that field, and the client does not either, because neither
+  proxy rewrites request bodies — that is a design decision, not an oversight. It
+  is recorded in [README.md](README.md) rather than papered over.
 
 ## [0.1.0] - 2026-09-14
 
@@ -52,16 +82,10 @@ see [SECURITY.md](SECURITY.md).
 
 ### Notes
 
-- CI runs green on the first commit: gofmt, vet and tests, four cross-builds, and
-  an end-to-end job that starts all four roles as ordinary processes and asserts
-  a completion proxied through the client, a `401` without a share key, a refused
-  digest, and a metered usage row.
-- Every claim in this file is now exercised somewhere. The release builds and
-  pushes the image for `linux/amd64` and `linux/arm64`; a CI job builds it again
-  and brings the entire compose devnet up, then asserts a proxied completion, a
-  `401` without the share key, a registry entry and a metered usage row; and the
-  Python example is run against that same live stack, including a refusal, so
-  "another language can implement this" is a test rather than a slogan.
+- Three things shipped unverified by their author, because the development
+  environment had no Docker, no Python and no CI runner: the Docker image with its
+  compose profiles, the Python example, and the CI workflow's own structure. The
+  first two were closed in 0.1.1; the third was closed by the first push.
 - What is still not proven anywhere: that a digest is **honest**. A host can
   report any digest it likes, so checking one catches mistakes rather than lies.
   That is the open problem this release documents instead of pretending to have
@@ -69,5 +93,6 @@ see [SECURITY.md](SECURITY.md).
 - The meter is on the seller's hardware and a digest is a claim rather than
   proof, which is why there is no payment anywhere in this release.
 
-[Unreleased]: https://github.com/hibbault/bothy/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/hibbault/bothy/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/hibbault/bothy/releases/tag/v0.1.1
 [0.1.0]: https://github.com/hibbault/bothy/releases/tag/v0.1.0
