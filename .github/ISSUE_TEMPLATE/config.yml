@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/hibbault/bothy/security/advisories/new
+    about: Report privately, please. Do not open a public issue for a vulnerability.
+  - name: Why is it built this way?
+    url: https://github.com/hibbault/bothy/blob/main/docs/design.md
+    about: The reasoning behind the current design, including what is deliberately unsolved.
+  - name: The wire contract
+    url: https://github.com/hibbault/bothy/blob/main/PROTOCOL.md
+    about: Registry, host and client routes. Read this before writing another implementation.

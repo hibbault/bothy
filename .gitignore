@@ -1,0 +1,23 @@
+# Build output
+/bin/
+/bothy
+/dist/
+*.exe
+
+# Python bytecode from the example client
+__pycache__/
+*.pyc
+
+# Personal agent scaffolding, not part of the project
+.freebuff/
+
+# Local environment. Only .env.example belongs in git — a real .env is where
+# tokens and share keys end up, and a committed token is a leaked token.
+.env
+.env.*
+!.env.example
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/

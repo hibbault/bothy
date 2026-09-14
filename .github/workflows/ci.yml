@@ -1,0 +1,102 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: format, vet, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      - run: make check
+
+  cross-build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # "Install is one binary" is a claim about the product, so it gets a test.
+      - name: cross compile
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -trimpath ./...
+
+  end-to-end:
+    name: end to end over real HTTP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make build
+      # No Docker here on purpose: the four roles are ordinary processes, so this
+      # exercises the real path in seconds and needs nothing installed.
+      - name: serve, discover, and call through the client
+        run: |
+          set -euo pipefail
+
+          ./bin/bothy mock      -listen :19101 -name ci   > /tmp/mock.log   2>&1 &
+          ./bin/bothy discovery -listen :19102            > /tmp/disc.log   2>&1 &
+          sleep 1
+          ./bin/bothy share -listen :19103 \
+            -engine-url http://127.0.0.1:19101 \
+            -discovery-url http://127.0.0.1:19102 \
+            -share-key ci-key -address 127.0.0.1:19103  > /tmp/host.log   2>&1 &
+          ./bin/bothy connect -listen 127.0.0.1:19104 \
+            -discovery-url http://127.0.0.1:19102 \
+            -model llama3.1:8b -share-key ci-key        > /tmp/client.log 2>&1 &
+          sleep 2
+
+          echo "--- registry ---"
+          curl -sf http://127.0.0.1:19102/models | grep -q '"llama3.1:8b"'
+          curl -sf http://127.0.0.1:19102/models | grep -q '"digest"'
+
+          echo "--- a request through the client reaches the engine ---"
+          reply="$(curl -sf http://127.0.0.1:19104/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"ci"}]}')"
+          echo "$reply"
+          echo "$reply" | grep -q 'you-said'
+
+          echo "--- the engine is never reachable without the key ---"
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19103/v1/models)"
+          test "$code" = "401" || { echo "expected 401 without a key, got $code"; exit 1; }
+
+          echo "--- a pinned digest that cannot match must stop the client ---"
+          if ./bin/bothy connect -listen 127.0.0.1:19105 \
+               -discovery-url http://127.0.0.1:19102 -model llama3.1:8b \
+               -share-key ci-key -expected-digest sha256:deadbeef; then
+            echo "the client started despite a digest mismatch"; exit 1
+          fi
+
+          echo "--- usage was metered, per peer ---"
+          curl -sf -H 'X-Bothy-Key: ci-key' http://127.0.0.1:19103/bothy/usage | grep -q '"peer": "default"'
+
+          echo "all end-to-end checks passed"

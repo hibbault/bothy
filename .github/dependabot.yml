@@ -1,0 +1,21 @@
+version: 2
+
+updates:
+  # Actions are the only third-party code Bothy runs. Keep them current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  # Bothy has no Go dependencies, so this normally has nothing to do. It is here
+  # so that the day a dependency is justified in an issue, it arrives with an
+  # update path already wired up.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "deps"

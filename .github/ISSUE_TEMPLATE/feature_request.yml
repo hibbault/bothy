@@ -1,0 +1,58 @@
+name: Feature or design proposal
+description: Suggest a capability, or argue that something in the design is wrong
+title: "proposal: "
+labels: ["design"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Disagreements with [docs/design.md](https://github.com/hibbault/bothy/blob/main/docs/design.md)
+        are welcome here, and are often more valuable than code. If you think a
+        documented decision is mistaken, say which one and why — that is a
+        complete proposal.
+
+        Two things the project has deliberately said no to so far: any Go
+        dependency, and payments. If you want to reopen one of those, that is
+        fine, but argue it rather than assuming it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What can you not do today, and what does it cost you? A concrete
+        situation beats a general principle.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: >
+        Roughly how it would work, and which role it changes — host, client,
+        registry, or the protocol itself.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What else you considered
+      description: >
+        Including doing nothing. If a smaller change would get you most of the
+        way, say so.
+    validations:
+      required: false
+
+  - type: textarea
+    id: protocol
+    attributes:
+      label: Does this change the wire protocol?
+      description: >
+        If it does, it needs to be written down in
+        [PROTOCOL.md](https://github.com/hibbault/bothy/blob/main/PROTOCOL.md)
+        before it is implemented, because other implementations are peers here,
+        not ports.
+    validations:
+      required: false

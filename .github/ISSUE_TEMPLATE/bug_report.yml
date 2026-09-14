@@ -1,0 +1,93 @@
+name: Bug report
+description: Something broke, or Bothy refused something it should have allowed
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Bothy refuses things on purpose — a digest mismatch, a peer over its cap,
+        a host without a share key. Please describe the refusal before assuming
+        it is a bug, and check [SECURITY.md](https://github.com/hibbault/bothy/blob/main/SECURITY.md)
+        if it involves a threat model you think is wrong.
+
+  - type: dropdown
+    id: role
+    attributes:
+      label: Which role?
+      description: The command you were running.
+      options:
+        - host — bothy share
+        - client — bothy connect
+        - registry — bothy discovery
+        - mock engine — bothy mock
+        - the docker devnet
+        - something else (describe it below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Include the actual output or log lines. Paste rather than summarise.
+      placeholder: |
+        bothy connect -discovery-url http://localhost:8080 -model llama3.1:8b
+        ... then what you saw
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: If you are not sure, say so — that is useful information too.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: >
+        Exact commands, from a clean start if you can. If the devnet reproduces
+        it, say which profile and which `docker compose` command.
+      placeholder: |
+        make devnet
+        docker compose stop host
+        curl http://127.0.0.1:11434/v1/chat/completions ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `bothy version`, or the image tag, or the commit.
+      placeholder: bothy 0.1.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >
+        OS and architecture, how you installed it (binary, go install, container),
+        and — for anything involving models — the engine, its version, and what
+        `bothy` reports as the model's digest.
+      placeholder: |
+        macOS 15 arm64, binary from the releases page
+        Ollama 0.5.x, model llama3.1:8b, digest sha256:...
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before opening this
+      options:
+        - label: I searched existing issues for this.
+          required: true
+        - label: This is not a security vulnerability — those go through the private advisory link below.
+          required: true

@@ -1,0 +1,182 @@
+# Bothy devnet: the whole flow on one machine, no GPU required.
+#
+#   make devnet
+#       registry + mock engine + host + client, wired end to end.
+#       (Equivalent to COMPOSE_PROFILES=mock docker compose up --build.)
+#
+#   make real
+#       swap the mock for real ollama/ollama. Needs a GPU to be useful.
+#
+#   make mismatch
+#       adds a second host serving llama3.1:8b with DIFFERENT weights, so you
+#       can watch the client refuse it instead of silently using them. The mock
+#       profile is included, so the first host still runs.
+#
+# The client publishes 127.0.0.1:11434 — Ollama's own port — so anything that
+# speaks OpenAI or Ollama can use somebody else's GPU with no config:
+#
+#   curl http://127.0.0.1:11434/v1/chat/completions \
+#     -H 'content-type: application/json' \
+#     -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"hi"}]}'
+
+name: bothy
+
+x-bothy: &bothy
+  build:
+    context: .
+  image: bothy:dev
+  restart: unless-stopped
+
+x-bothy-healthcheck: &bothy-healthcheck
+  interval: 5s
+  timeout: 3s
+  retries: 12
+  start_period: 5s
+
+services:
+  # ---- engines: same slot, two implementations, never both at once ----------
+
+  engine-mock:
+    <<: *bothy
+    profiles: ["mock"]
+    command: ["mock"]
+    environment:
+      BOTHY_LISTEN: ":11434"
+      BOTHY_MOCK_NAME: "mock-a"
+      # Obviously-fake digests. qwen2.5:7b exists only so the client has a second
+      # model to choose from.
+      BOTHY_MOCK_MODELS: "llama3.1:8b=sha256:1111111111111111111111111111111111111111111111111111111111111111,qwen2.5:7b=sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      BOTHY_MOCK_DELAY: "30ms"
+    networks:
+      net:
+        aliases: [engine]
+    healthcheck:
+      <<: *bothy-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:11434/healthz"]
+
+  engine-ollama:
+    profiles: ["real"]
+    image: ollama/ollama:latest
+    networks:
+      net:
+        aliases: [engine]
+    volumes:
+      - ollama:/root/.ollama
+    # GPU access needs nvidia-container-toolkit on the host. Uncomment to use it;
+    # leaving it commented runs Ollama on CPU, which works but is slow.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # Then pull a model once:
+    #   docker compose exec engine-ollama ollama pull llama3.1:8b
+    # And give the host the real weights hashes:
+    #   BOTHY_MODELS_DIR: "/root/.ollama/models" is not enough on its own —
+    #   the models live in the engine's container, so either share that volume
+    #   with the host container or pin digests with BOTHY_MODELS.
+
+  # Second engine with different weights, for the mismatch test.
+  engine-mock-b:
+    <<: *bothy
+    profiles: ["mismatch"]
+    command: ["mock"]
+    environment:
+      BOTHY_LISTEN: ":11434"
+      BOTHY_MOCK_NAME: "mock-b"
+      BOTHY_MOCK_MODELS: "llama3.1:8b=sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    networks:
+      net:
+        aliases: [engine-b]
+
+  # ---- discovery -----------------------------------------------------------
+
+  discovery:
+    <<: *bothy
+    command: ["discovery"]
+    environment:
+      BOTHY_LISTEN: ":8080"
+      BOTHY_REGISTRY_TTL: "60s"
+    ports:
+      - "8080:8080"
+    networks: [net]
+    healthcheck:
+      <<: *bothy-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+
+  # ---- host: shares the GPU ------------------------------------------------
+
+  host:
+    <<: *bothy
+    command: ["share"]
+    environment:
+      BOTHY_LISTEN: ":7777"
+      BOTHY_ENGINE_URL: "http://engine:11434"
+      BOTHY_DISCOVERY_URL: "http://discovery:8080"
+      BOTHY_SHARE_KEY: "dev-share-key"
+      # Give each peer their own key instead, so /bothy/usage names who used the
+      # GPU rather than reporting one anonymous row:
+      #   BOTHY_SHARE_KEYS: "alice:key-a,bob:key-b"
+      # What peers should dial. Inside the compose network that is the service
+      # name; on the open internet it would be the address you actually expose.
+      BOTHY_PUBLIC_ADDRESS: "host:7777"
+      BOTHY_HEARTBEAT: "20s"
+      # Requests served at once across the whole host. A GPU serialises work
+      # anyway, so this is the limit that protects it. 0 disables the cap.
+      BOTHY_MAX_CONCURRENT: "2"
+      # Per-peer request rate, to limit one noisy consumer. 0 disables it.
+      BOTHY_MAX_REQUESTS_PER_MINUTE: "0"
+    ports:
+      - "7777:7777"
+    # Deliberately NOT depending on an engine: Compose starts profile-gated
+    # dependencies regardless of profile, which would run both engines at once
+    # and leave two containers answering to the "engine" alias. The host
+    # re-probes the engine every heartbeat, so it copes with a slow start.
+    depends_on:
+      - discovery
+    networks: [net]
+    healthcheck:
+      <<: *bothy-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7777/bothy/healthz"]
+
+  host-b:
+    <<: *bothy
+    profiles: ["mismatch"]
+    command: ["share"]
+    environment:
+      BOTHY_LISTEN: ":7777"
+      BOTHY_ENGINE_URL: "http://engine-b:11434"
+      BOTHY_DISCOVERY_URL: "http://discovery:8080"
+      BOTHY_SHARE_KEY: "dev-share-key"
+      BOTHY_PUBLIC_ADDRESS: "host-b:7777"
+    depends_on:
+      - discovery
+    networks: [net]
+
+  # ---- client: borrows the GPU --------------------------------------------
+
+  client:
+    <<: *bothy
+    command: ["connect"]
+    environment:
+      BOTHY_LISTEN: ":11434"
+      BOTHY_DISCOVERY_URL: "http://discovery:8080"
+      BOTHY_MODEL: "llama3.1:8b"
+      BOTHY_SHARE_KEY: "dev-share-key"
+    ports:
+      - "127.0.0.1:11434:11434"
+    depends_on:
+      - discovery
+      - host
+    networks: [net]
+    healthcheck:
+      <<: *bothy-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:11434/bothy/status"]
+
+networks:
+  net:
+
+volumes:
+  ollama:
