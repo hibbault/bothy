@@ -119,6 +119,9 @@ document, one of the two is a bug — please open an issue either way.
 - Bugs and design disagreements: open an issue.
 - Security problems: see [SECURITY.md](SECURITY.md). Please do not open a public
   issue for those.
+- Labels live in [`.github/labels.txt`](.github/labels.txt) and a workflow applies
+  them on push. If a label is missing, that file is where to add it — no
+  repository admin rights required, which is why they are kept there.
 
 ## Commits and pull requests
 

@@ -1,0 +1,37 @@
+# Bothy's label set, one label per line:
+#
+#     name | colour | description
+#
+# Applied to the repository by .github/workflows/labels.yml on every push that
+# touches this file, using that workflow's own token. So the labels need no
+# personal access token and no admin rights to stay in step with the repo: edit
+# this file and the labels follow, which is how a project should keep them.
+#
+# The set is deliberately specific to this project rather than the generic
+# default. The two problems Bothy has not solved (proving which weights ran, and
+# reaching a host behind a home router) are labels, so they can be filtered for.
+# So is `unverified`, for the things CI cannot check.
+#
+# Colours are the GitHub defaults where a name matches one, so nothing here looks
+# out of place next to another repository's labels.
+bug|d73a4a|Something is broken, or a refusal that should not have happened
+documentation|0075ca|README, PROTOCOL.md, docs/design.md
+duplicate|cfd3d7|Already reported
+enhancement|a2eeef|A new capability
+good first issue|7057ff|Self-contained, no GPU required
+help wanted|008672|Extra attention welcome
+invalid|e4e669|Not reproducible, or not about Bothy
+question|d876e3|A question about how Bothy works
+wontfix|ffffff|Deliberately not doing this
+design|5319e7|A disagreement with, or a change to, the design
+protocol|0e8a16|Touches the wire contract in PROTOCOL.md
+digests|1d76db|Model identity, hashing, verification
+engine|fbca04|An adapter, or support for another inference engine
+registry|c5def5|Discovery, heartbeats, the registry service
+metering|bfd4d2|Usage counting, caps, rate limits
+docker|006b75|The image, the compose profiles, the devnet
+security|d93f0b|Keys, exposure, the threat model
+reachability|d4c5f9|Connecting a host behind NAT — tunnels, transport, relays
+anonymity|c2e0c6|Hiding addresses. Deferred, not rejected
+payments|fef2c0|Metering to billing. Not now, but the door is open
+unverified|ededed|Needs a check CI cannot perform

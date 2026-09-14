@@ -1,0 +1,42 @@
+name: labels
+
+# Labels live in the repository instead of in someone's browser, so they can be
+# reviewed, diffed and restored. This runs only when the label file changes, plus
+# on demand.
+on:
+  push:
+    branches: [main]
+    paths: [".github/labels.txt"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  apply:
+    name: apply the label set
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # gh is preinstalled on the runner and authenticates with the workflow's
+      # own token, so none of this needs a personal access token with extra
+      # permissions — which is the whole point of doing it here.
+      - name: create or update every label
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          applied=0
+          while IFS='|' read -r name colour description; do
+            case "$name" in ''|'#'*) continue;; esac
+            # A trailing space from hand-editing must not become part of a name.
+            name="$(printf '%s' "$name" | sed 's/[[:space:]]*$//')"
+            if [ -z "$name" ] || [ -z "$colour" ]; then
+              echo "skipping a malformed line: $name"; continue
+            fi
+            gh label create "$name" --color "$colour" --description "$description" --force
+            applied=$((applied + 1))
+          done < .github/labels.txt
+          echo "applied $applied labels"
