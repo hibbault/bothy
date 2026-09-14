@@ -49,13 +49,16 @@ see [SECURITY.md](SECURITY.md).
   an end-to-end job that starts all four roles as ordinary processes and asserts
   a completion proxied through the client, a `401` without a share key, a refused
   digest, and a metered usage row.
-- The Dockerfile is proven, because the release builds it: `v0.1.0` was built and
-  pushed as a multi-arch image for `linux/amd64` and `linux/arm64`.
-- Still unverified by their author, because the development environment had no
-  Docker and no Python: **the compose profiles have never been started**, and
-  `examples/python/bothy_client.py` has never been run. Both sit on top of Go
-  code the checks above cover — what is unproven is the packaging around it, not
-  the behaviour.
+- Every claim in this file is now exercised somewhere. The release builds and
+  pushes the image for `linux/amd64` and `linux/arm64`; a CI job builds it again
+  and brings the entire compose devnet up, then asserts a proxied completion, a
+  `401` without the share key, a registry entry and a metered usage row; and the
+  Python example is run against that same live stack, including a refusal, so
+  "another language can implement this" is a test rather than a slogan.
+- What is still not proven anywhere: that a digest is **honest**. A host can
+  report any digest it likes, so checking one catches mistakes rather than lies.
+  That is the open problem this release documents instead of pretending to have
+  solved, along with reaching a host behind a home router.
 - The meter is on the seller's hardware and a digest is a claim rather than
   proof, which is why there is no payment anywhere in this release.
 

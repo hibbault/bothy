@@ -101,6 +101,35 @@ jobs:
 
           echo "all end-to-end checks passed"
 
+      # PROTOCOL.md claims that another language can implement this, which is a
+      # slogan until something other than the Go binary actually does it. The
+      # example is run against the same live stack the Go steps just used.
+      - name: the Python example talks to the same stack
+        run: |
+          set -euo pipefail
+          py=examples/python/bothy_client.py
+
+          echo "--- it reads what the host serves, with digests ---"
+          python3 "$py" models --host 127.0.0.1:19103 --key ci-key | grep -q 'llama3.1:8b'
+
+          echo "--- and it is refused without a key ---"
+          if python3 "$py" models --host 127.0.0.1:19103 >/dev/null 2>&1; then
+            echo "the Python client was not refused without a key"; exit 1
+          fi
+
+          echo "--- it sends a completion directly to the host ---"
+          python3 "$py" chat --host 127.0.0.1:19103 --key ci-key \
+            --model llama3.1:8b --prompt "from python" | grep -q 'you-said'
+
+          echo "--- and it refuses weights it was not promised ---"
+          if python3 "$py" chat --host 127.0.0.1:19103 --key ci-key \
+               --model llama3.1:8b --prompt "no" \
+               --expected-digest sha256:deadbeef; then
+            echo "the Python client ran despite a digest mismatch"; exit 1
+          fi
+
+          echo "the Python client agrees with the Go implementation"
+
   devnet:
     name: docker compose devnet
     runs-on: ubuntu-latest
