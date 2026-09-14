@@ -22,7 +22,7 @@ import (
 
 // version is stamped at build time (`-X main.version=…`) so that a released
 // binary can say which release it is. See the LDFLAGS in the Makefile.
-var version = "0.2.0-dev"
+var version = "0.2.1-dev"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -12,8 +12,12 @@ the fix will land on `main`.
 
 ## Supported versions
 
-None yet. There has been no release, `main` is the only thing that exists, and
-nothing here should be exposed to the open internet as-is.
+The latest release only — `0.2.0` at the time of writing. There are no backports
+and no long-term branch: a fix lands on `main` and goes out in the next release,
+so report against the version `bothy version` reports rather than against a tag.
+
+Nothing here should be exposed to the open internet as-is. The threat model below
+is deliberately short on reassurance and specific about why.
 
 ## Threat model
 
