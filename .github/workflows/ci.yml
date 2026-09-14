@@ -100,3 +100,76 @@ jobs:
           curl -sf -H 'X-Bothy-Key: ci-key' http://127.0.0.1:19103/bothy/usage | grep -q '"peer": "default"'
 
           echo "all end-to-end checks passed"
+
+  devnet:
+    name: docker compose devnet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The one job that keeps the two things no laptop can check honest: the
+      # image builds at all, and the compose profiles actually come up and talk
+      # to each other. A devnet that only ever ran on the author's machine is a
+      # devnet that does not run.
+      - name: build and start the stack
+        run: COMPOSE_PROFILES=mock docker compose up --build -d
+
+      - name: wait for the client to answer
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:11434/bothy/status >/dev/null 2>&1; then
+              echo "client up after ~$((i * 3))s"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "the client never came up"
+          docker compose ps
+          exit 1
+
+      - name: a request through the client reaches somebody else's engine
+        run: |
+          set -euo pipefail
+          reply=""
+          # The host registers on a heartbeat, so the first request can arrive
+          # before it has announced itself. Retry rather than flake.
+          for i in $(seq 1 10); do
+            reply="$(curl -fsS http://127.0.0.1:11434/v1/chat/completions \
+              -H 'content-type: application/json' \
+              -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"devnet"}]}' \
+              || true)"
+            case "$reply" in *you-said*) break;; esac
+            sleep 3
+          done
+          echo "$reply"
+          case "$reply" in
+            *you-said*) echo "proxied through the devnet";;
+            *) echo "the completion never came back through the client"; exit 1;;
+          esac
+
+      - name: the host refuses a request without the share key
+        run: |
+          set -euo pipefail
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7777/v1/models)"
+          test "$code" = "401" || { echo "expected 401, got $code"; exit 1; }
+
+      - name: the registry knows the host is there
+        run: |
+          set -euo pipefail
+          curl -fsS http://127.0.0.1:8080/models | grep -q '"llama3.1:8b"'
+          curl -fsS http://127.0.0.1:8080/models | grep -q '"digest"'
+
+      - name: usage was metered, per peer
+        run: |
+          set -euo pipefail
+          curl -fsS -H 'X-Bothy-Key: dev-share-key' \
+            http://127.0.0.1:7777/bothy/usage | grep -q '"peer": "default"'
+
+      - name: logs
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: tear down
+        if: always()
+        run: docker compose down -v
