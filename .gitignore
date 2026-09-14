@@ -11,6 +11,10 @@ __pycache__/
 # Personal agent scaffolding, not part of the project
 .freebuff/
 
+# What a swarm run leaves behind: artifacts and a report, both regenerable, and
+# both the kind of thing that should not be committed by accident.
+.bothy/
+
 # Local environment. Only .env.example belongs in git — a real .env is where
 # tokens and share keys end up, and a committed token is a leaked token.
 .env

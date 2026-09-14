@@ -45,6 +45,7 @@ docker compose exec engine-ollama ollama pull llama3.1:8b
 | `internal/mockengine` | A fake engine, so the stack runs with no GPU |
 | `internal/digest` | Hashing weights files, with a cache |
 | `internal/httpx` | Shared HTTP helpers |
+| `internal/swarm` | Experimental and build-tagged: the task runner. Not in a default build, not in any release |
 | `examples/python` | A client in another language, proving the protocol is the contract |
 
 `internal/` is not a public API. Nothing outside the module can import it, and
@@ -63,6 +64,14 @@ its limit, a stream that arrives split at an awkward byte boundary. A change tha
 alters what Bothy refuses should come with a test that says so.
 
 **`gofmt`, `go vet` and `go test ./...` must pass.** `make check` runs all three.
+
+**The experimental swarm stays opt-in.** Everything in `internal/swarm` and
+`cmd/bothy/solve.go` is behind `-tags swarm`. A default `make build` has no trace
+of it, no release artifact contains it, and `make check` deliberately does not test
+it — `make swarm-check` does, and CI runs that as a separate job. If you touch it,
+run both. It also has to stay removable: deleting `internal/swarm` and
+`cmd/bothy/solve.go` must leave the project whole, so nothing outside them may
+import it.
 
 **Small, focused changes.** One idea per pull request.
 

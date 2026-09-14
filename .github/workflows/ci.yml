@@ -140,6 +140,77 @@ jobs:
 
           echo "the Python client agrees with the Go implementation"
 
+  swarm:
+    # The swarm is a plugin, not a feature: build-tagged, in no release binary,
+    # outside PROTOCOL.md. It is checked here so that it cannot rot, and kept out
+    # of `make check` so that a contributor never meets it uninvited.
+    name: swarm (experimental, opt-in)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The claim is that a default build has no swarm in it. Saying so in a
+      # document is not the same as it being true, so it is asserted.
+      - name: a default build does not contain the swarm
+        run: |
+          set -euo pipefail
+          make build
+          if ./bin/bothy help 2>&1 | grep -q solve; then
+            echo "help mentions solve in a default build"; exit 1
+          fi
+          if ./bin/bothy solve 2>/dev/null; then
+            echo "solve runs in a default build"; exit 1
+          fi
+
+      - name: vet and test, tagged
+        run: make swarm-check
+
+      - name: the loop end to end against the mock engine
+        run: |
+          set -euo pipefail
+          make swarm
+
+          ./bin/bothy-swarm mock -listen :19201 -name ci > /tmp/mock.log 2>&1 &
+          sleep 1
+
+          # Two identical attempts and an agreement accept: the simplest task
+          # that is worth farming, and checkable without a GPU.
+          cat > /tmp/task.json <<'JSON'
+          { "goal": "two attempts that must agree",
+            "model": "llama3.1:8b",
+            "accept": { "type": "agreement", "nodes": ["attempt-1", "attempt-2"] },
+            "nodes": [
+              { "id": "attempt-1", "prompt": "name the capital of France",
+                "check": { "type": "command", "run": "grep -q 'you-said' \"$BOTHY_ARTIFACT\"" } },
+              { "id": "attempt-2", "same_as": "attempt-1" }
+            ] }
+          JSON
+
+          echo "--- the plan is readable without running anything ---"
+          ./bin/bothy-swarm solve -task /tmp/task.json -plan | grep -q 'attempt-2'
+
+          echo "--- the run is accepted ---"
+          ./bin/bothy-swarm solve -task /tmp/task.json \
+            -engine-url http://127.0.0.1:19201 -model llama3.1:8b -dir /tmp/bothy \
+            -json > /tmp/report.json
+          grep -q '"accepted": true' /tmp/report.json
+
+          echo "--- the artifacts are on disk, under their digests ---"
+          test -n "$(ls -A /tmp/bothy/artifacts)"
+          grep -q '"status": "ok"' /tmp/bothy/report.json
+
+          echo "--- a task with no accept criterion is refused, not run ---"
+          echo '{"goal":"g","nodes":[{"id":"a","prompt":"p"}]}' > /tmp/no-accept.json
+          if ./bin/bothy-swarm solve -task /tmp/no-accept.json 2>/dev/null; then
+            echo "a task with no accept criterion was run"; exit 1
+          fi
+
+          echo "the swarm agrees with its own documentation"
+
   devnet:
     name: docker compose devnet
     runs-on: ubuntu-latest

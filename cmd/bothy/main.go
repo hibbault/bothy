@@ -4,6 +4,10 @@
 // One binary because the roles overlap: a person who shares a GPU is usually
 // also the person who wants a client running, and shipping one artifact means
 // installing Bothy is copying a file or pulling an image.
+//
+// Experimental commands are not in it. They live behind a build tag and register
+// themselves through experimentalCommand, so a default build has no trace of
+// them — see cmd/bothy/solve.go.
 package main
 
 import (
@@ -23,6 +27,15 @@ import (
 // version is stamped at build time (`-X main.version=…`) so that a released
 // binary can say which release it is. See the LDFLAGS in the Makefile.
 var version = "0.2.1-dev"
+
+// experimentalCommand is how a build-tagged command registers itself. It is nil
+// in a default build, which is the point: nothing opt-in is reachable by
+// accident. It returns whether it recognised the command.
+var experimentalCommand func(ctx context.Context, log *slog.Logger, cmd string, args []string) (bool, error)
+
+// experimentalUsage is appended to the help text by a build-tagged command, so
+// that help describes the binary you actually compiled and nothing else.
+var experimentalUsage string
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -53,6 +66,12 @@ func main() {
 		usage()
 		return
 	default:
+		if experimentalCommand != nil {
+			if handled, hookErr := experimentalCommand(ctx, log, cmd, args); handled {
+				err = hookErr
+				break
+			}
+		}
 		fmt.Fprintf(os.Stderr, "bothy: unknown command %q\n\n", cmd)
 		usage()
 		os.Exit(2)
@@ -86,4 +105,9 @@ Examples:
 
 Then point anything OpenAI-compatible at http://127.0.0.1:11434/v1
 `)
+	// Build-tagged commands describe themselves, so this stays accurate for
+	// whichever binary you compiled.
+	if experimentalUsage != "" {
+		fmt.Fprint(os.Stderr, experimentalUsage)
+	}
 }

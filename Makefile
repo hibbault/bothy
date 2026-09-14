@@ -12,7 +12,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .DEFAULT_GOAL := check
-.PHONY: help build dist test vet fmt fmt-check check cover devnet real mismatch down clean
+.PHONY: help build dist test vet fmt fmt-check check cover devnet real mismatch down clean swarm swarm-check
 
 help:
 	@echo "build     compile the binary to $(BIN)"
@@ -24,6 +24,8 @@ help:
 	@echo "cover     tests with a coverage summary"
 	@echo "fmt       rewrite files with gofmt"
 	@echo "clean     remove build output"
+	@echo "swarm     build the experimental task runner (opt-in, not in releases)"
+	@echo "swarm-check  gofmt, vet and test it, tagged (not part of check)"
 
 build:
 	$(GO) build -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/bothy
@@ -44,6 +46,17 @@ dist:
 	@cd $(DIST) && rm -f SHA256SUMS && \
 		(sha256sum bothy-* 2>/dev/null || shasum -a 256 bothy-*) > SHA256SUMS
 	@echo "  $(DIST)/SHA256SUMS"
+
+# The swarm is a plugin, not a feature: it lives behind `-tags swarm`, nothing
+# from it is in the default build, and it is deliberately absent from `check` and
+# from every release artifact. See docs/swarm.md. Building it is a separate,
+# explicit act, which is what keeps the promise.
+swarm:
+	$(GO) build -tags swarm -ldflags '$(LDFLAGS)' -o $(BIN)-swarm ./cmd/bothy
+
+swarm-check: fmt-check
+	$(GO) vet -tags swarm ./...
+	$(GO) test -tags swarm ./internal/swarm/...
 
 test:
 	$(GO) test ./...

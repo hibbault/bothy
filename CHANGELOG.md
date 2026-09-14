@@ -10,7 +10,36 @@ a connection if you care.
 
 ## [Unreleased]
 
-Nothing yet.
+A task runner, added as an experimental plugin rather than a feature: it is
+build-tagged, it is in no release binary, and PROTOCOL.md does not cover it. The
+GPU-sharing product is unchanged by every word of this section.
+
+### Added
+
+- **`bothy solve` — a task runner, behind `-tags swarm`.** It reads a task file (a
+goal, a **mandatory** accept criterion, and a DAG), expands `same_as` copies into
+independent attempts, runs the nodes whose dependencies are met, checks each one,
+and writes every artifact to disk addressed by the SHA-256 of its bytes. `-plan`
+validates and shows what would run without touching a GPU. See
+[docs/swarm.md](docs/swarm.md).
+- **Three checks**, all of which answer "did this work" without asking a model:
+`command` (a shell command, given the artifact's path in `$BOTHY_ARTIFACT`, with
+the whole process group killed on timeout), `exact`, and `agreement` (a count, not
+a vote).
+- **A refusal suite over the task file**, in the style the rest of the repo
+already uses: no accept criterion, a verify node that produces, a cycle, a copy
+that overrides half of what it copies, an ambiguous answer, work whose result
+nothing uses, `needs` requirements the runner cannot honour, and a misspelled
+field. All refused at load time, before any GPU is touched.
+- `make swarm` and `make swarm-check`, plus a CI job that first asserts a default
+build contains no trace of the swarm and then runs the loop end to end against the
+mock engine.
+
+### Notes
+
+- `make check` does not test the swarm, deliberately: a contributor should not
+meet experimental code unless they asked for it. `make swarm-check` does, and CI
+runs it separately.
 
 ## [0.2.0] - 2026-09-14
 

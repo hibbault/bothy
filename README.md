@@ -26,6 +26,7 @@ side.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, layout, and the ground rules |
 | [SECURITY.md](SECURITY.md) | The threat model, and how to report a problem |
 | [CHANGELOG.md](CHANGELOG.md) | What landed in each release |
+| [docs/swarm.md](docs/swarm.md) | Experimental and opt-in: farming *problems* rather than prompts. A plugin, in no release binary |
 
 ## Install
 
@@ -327,6 +328,38 @@ python3 examples/python/bothy_client.py chat   --host box.example:7777 --key sec
     --model llama3.1:8b --prompt "who are you?" --stream
 ```
 
+## The swarm — experimental, opt-in, a plugin
+
+There is a second thing in this repository, and it is deliberately not a feature:
+an experimental task runner that fans a problem out into independent attempts,
+checks each one with something cheaper than producing it, and stops at the
+integrator, which is a person.
+
+It is in no release binary, and a default build does not contain it:
+
+```sh
+make swarm          # bin/bothy-swarm — the only artifact with `bothy solve` in it
+make swarm-check    # its tests, tagged. Deliberately not part of `make check`
+```
+
+```sh
+bothy-swarm solve -task task.json -plan   # validate and show what would run
+bothy-swarm solve -task task.json         # run it
+```
+
+Inference comes from an OpenAI-compatible endpoint, which is the same surface
+`bothy connect` exposes and `bothy share` proxies — so borrowing a GPU for a task
+is one flag, not a new protocol:
+
+```sh
+bothy-swarm solve -task task.json -engine-url http://127.0.0.1:11434 -share-key s
+```
+
+An accept criterion is mandatory. Work that cannot be checked cannot be farmed,
+so a task without one is refused rather than run, and `-plan` shows what would
+happen without touching a GPU. [docs/swarm.md](docs/swarm.md) has the design, the
+three checks, and an honest account of the parts that are still unsolved.
+
 ## What this gives you, and what it doesn't
 
 Provides:
@@ -364,6 +397,10 @@ Does not provide:
    not: a commission is precisely what turns open-source software into a
    regulated money transmitter.
 8. Later: reputation, Tor transport, incentives.
+
+Outside all of that, and outside the versioning above: the
+[swarm](docs/swarm.md), which is a build-tagged plugin rather than part of the
+product. It ships in no release and PROTOCOL.md does not cover it.
 
 ## Open decisions
 
