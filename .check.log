@@ -1,0 +1,14 @@
+--- VET EXIT: 0 ---
+?   	github.com/hibbault/bothy/cmd/bothy	[no test files]
+?   	github.com/hibbault/bothy/internal/config	[no test files]
+?   	github.com/hibbault/bothy/internal/httpx	[no test files]
+ok  	github.com/hibbault/bothy/internal/client	0.019s
+ok  	github.com/hibbault/bothy/internal/digest	0.015s
+ok  	github.com/hibbault/bothy/internal/discovery	0.030s
+ok  	github.com/hibbault/bothy/internal/engine	0.023s
+ok  	github.com/hibbault/bothy/internal/host	0.019s
+ok  	github.com/hibbault/bothy/internal/meter	0.017s
+ok  	github.com/hibbault/bothy/internal/mockengine	0.021s
+ok  	github.com/hibbault/bothy/internal/model	0.014s
+ok  	github.com/hibbault/bothy/internal/registry	0.015s
+--- TEST EXIT: 0 ---

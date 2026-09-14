@@ -126,6 +126,48 @@ func TestChatCompletionStreamsServerSentEvents(t *testing.T) {
 	}
 }
 
+// A streamed reply has to be countable, or the host can only record it as
+// unmetered. Real engines report usage in the closing frame, so the mock has to
+// as well — otherwise the devnet can never show the meter working on streams,
+// which is the shape most interactive use actually takes.
+func TestStreamedReplyReportsUsageInTheClosingFrame(t *testing.T) {
+	srv := newMock(t)
+	resp := postJSON(t, srv.URL+"/v1/chat/completions", map[string]any{
+		"model":    "llama3.1:8b",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "one two three"}},
+	})
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var usage map[string]any
+	for _, frame := range strings.Split(string(raw), "\n\n") {
+		data, ok := strings.CutPrefix(strings.TrimSpace(frame), "data:")
+		if !ok || strings.TrimSpace(data) == "[DONE]" {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(data), &parsed); err != nil {
+			continue
+		}
+		// Only the last frame carrying usage matters; earlier ones have none.
+		if reported, ok := parsed["usage"].(map[string]any); ok {
+			usage = reported
+		}
+	}
+	if usage == nil {
+		t.Fatalf("no streamed frame carried usage, so a stream can only be unmetered: %q", string(raw))
+	}
+	for _, field := range []string{"prompt_tokens", "completion_tokens"} {
+		if n, _ := usage[field].(float64); n <= 0 {
+			t.Errorf("%s = %v, want > 0", field, usage[field])
+		}
+	}
+}
+
 // Tooling still sends the older completions shape, and content can be a list of
 // typed parts rather than a string.
 func TestContentPartsAreFlattened(t *testing.T) {

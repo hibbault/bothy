@@ -99,6 +99,16 @@ jobs:
           echo "--- usage was metered, per peer ---"
           curl -sf -H 'X-Bothy-Key: ci-key' http://127.0.0.1:19103/bothy/usage | grep -q '"peer": "default"'
 
+          echo "--- and a streamed reply is counted, not merely noticed ---"
+          curl -sfN http://127.0.0.1:19104/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"llama3.1:8b","stream":true,"messages":[{"role":"user","content":"streamed"}]}' \
+            > /dev/null
+          # Streaming is how most interactive use arrives, so a stream that the
+          # meter cannot see is the common case being invisible.
+          curl -sf -H 'X-Bothy-Key: ci-key' http://127.0.0.1:19103/bothy/usage \
+            | grep -q '"unmetered_responses": 0'
+
           echo "all end-to-end checks passed"
 
       # PROTOCOL.md claims that another language can implement this, which is a

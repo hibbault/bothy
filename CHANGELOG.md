@@ -10,7 +10,14 @@ a connection if you care.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- Streamed replies are counted. The mock engine reported token usage only on
+  whole responses, so a streamed request could only ever be recorded as
+  `unmetered_responses` — and streaming is how most interactive use arrives, so
+  the one path that could not be counted was the common one. The mock now closes
+  a stream with usage, as Ollama does and as OpenAI does when a client asks, with
+  a test and a CI assertion holding it there.
 
 ## [0.1.0] - 2026-09-14
 

@@ -152,7 +152,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	prompt := lastUserMessage(req.Messages)
 	reply := s.reply(req.Model, prompt)
 	if req.Stream {
-		s.streamChat(r.Context(), w, req.Model, reply)
+		s.streamChat(r.Context(), w, req.Model, prompt, reply)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
@@ -180,7 +180,7 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	prompt := textOf(req.Prompt)
 	reply := s.reply(req.Model, prompt)
 	if req.Stream {
-		s.streamCompletion(r.Context(), w, req.Model, reply)
+		s.streamCompletion(r.Context(), w, req.Model, prompt, reply)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
@@ -211,7 +211,7 @@ func (s *Server) reply(reqModel, prompt string) string {
 	return fmt.Sprintf("[%s] model=%s digest=%s you-said=%q", s.Config.Name, reqModel, d, prompt)
 }
 
-func (s *Server) streamChat(ctx context.Context, w http.ResponseWriter, reqModel, text string) {
+func (s *Server) streamChat(ctx context.Context, w http.ResponseWriter, reqModel, prompt, text string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		httpx.Error(w, http.StatusInternalServerError, "streaming unsupported by this server")
@@ -226,17 +226,20 @@ func (s *Server) streamChat(ctx context.Context, w http.ResponseWriter, reqModel
 		if i > 0 {
 			delta = " " + word
 		}
-		writeChunk(w, flusher, "chat.completion.chunk", reqModel, delta, nil)
+		writeChunk(w, flusher, "chat.completion.chunk", reqModel, delta, nil, nil)
 		if !s.pause(ctx) {
 			return
 		}
 	}
-	writeChunk(w, flusher, "chat.completion.chunk", reqModel, "", "stop")
+	// The final frame carries the usage, as Ollama's does and as OpenAI's does
+	// when a client asks for it. Without it the host can only record a streamed
+	// request as unmetered — honest, and useless for knowing who used what.
+	writeChunk(w, flusher, "chat.completion.chunk", reqModel, "", "stop", usage(prompt, text))
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
 
-func (s *Server) streamCompletion(ctx context.Context, w http.ResponseWriter, reqModel, text string) {
+func (s *Server) streamCompletion(ctx context.Context, w http.ResponseWriter, reqModel, prompt, text string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		httpx.Error(w, http.StatusInternalServerError, "streaming unsupported by this server")
@@ -267,6 +270,20 @@ func (s *Server) streamCompletion(ctx context.Context, w http.ResponseWriter, re
 			return
 		}
 	}
+	// Same reasoning as streamChat: a closing frame with the usage, so a streamed
+	// completion is countable rather than merely noticed.
+	final, err := json.Marshal(map[string]any{
+		"id":      "cmpl-mock",
+		"object":  "text_completion",
+		"created": time.Now().Unix(),
+		"model":   reqModel,
+		"choices": []any{map[string]any{"index": 0, "text": "", "finish_reason": "stop"}},
+		"usage":   usage(prompt, text),
+	})
+	if err == nil {
+		fmt.Fprintf(w, "data: %s\n\n", final)
+		flusher.Flush()
+	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
@@ -284,8 +301,10 @@ func (s *Server) pause(ctx context.Context) bool {
 	}
 }
 
-func writeChunk(w http.ResponseWriter, f http.Flusher, object, reqModel, delta string, finish any) {
-	payload, err := json.Marshal(map[string]any{
+// writeChunk emits one SSE frame. usage is only attached when non-nil, so the
+// delta frames stay the shape clients already expect.
+func writeChunk(w http.ResponseWriter, f http.Flusher, object, reqModel, delta string, finish any, usage map[string]any) {
+	frame := map[string]any{
 		"id":      "chatcmpl-mock",
 		"object":  object,
 		"created": time.Now().Unix(),
@@ -295,7 +314,11 @@ func writeChunk(w http.ResponseWriter, f http.Flusher, object, reqModel, delta s
 			"delta":         map[string]any{"content": delta},
 			"finish_reason": finish,
 		}},
-	})
+	}
+	if usage != nil {
+		frame["usage"] = usage
+	}
+	payload, err := json.Marshal(frame)
 	if err != nil {
 		return
 	}
