@@ -43,6 +43,30 @@ func Int(key string, def int) int {
 	return n
 }
 
+// Bool parses key as a boolean, falling back to def. Unset means def, and so
+// does anything unparseable: a typo in a compose file should not silently flip a
+// setting to false.
+//
+// It accepts what strconv.ParseBool does, plus yes/no and on/off and their first
+// letters, because these defaults end up in compose files and shell exports
+// where those spellings are what people reach for.
+func Bool(key string, def bool) bool {
+	v := strings.ToLower(Str(key, ""))
+	switch v {
+	case "":
+		return def
+	case "yes", "y", "on":
+		return true
+	case "no", "n", "off":
+		return false
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return def
+	}
+	return b
+}
+
 // List splits key on commas, trimming spaces and dropping empty items.
 func List(key string) []string {
 	parts := strings.Split(Str(key, ""), ",")

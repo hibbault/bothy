@@ -228,11 +228,15 @@ Three honest caveats:
 - The counts come from the **engine's own report**, and an engine that reports
   nothing is recorded as `unmetered_responses` rather than guessed at. A host
   cannot produce a token count it was never given — which is exactly why the
-  meter is trustworthy only as far as the host is. Streaming is the case to
-  watch: Ollama reports usage in the closing frame, but an OpenAI-compatible
-  engine generally does so only when the client asks for it
-  (`stream_options.include_usage`), so a streamed reply can land as unmetered
-  depending on what is behind the host.
+  meter is trustworthy only as far as the host is.
+- **Streamed replies are counted, and that takes work.** An OpenAI-compatible
+  engine reports usage on a stream only when the request asks for it, so the host
+  adds `stream_options.include_usage` on the way to the engine — the one request
+  body Bothy ever rewrites, and only on the two streaming OpenAI routes. A caller
+  that has already expressed a preference is never overridden, and
+  `BOTHY_STREAM_USAGE=false` turns the whole thing off. Two cases still land as
+  unmetered: a request body over 1 MiB, which is forwarded rather than read, and
+  an engine that ignores the ask.
 - Limits apply to the **inference path only**. `/bothy/models` and
   `/bothy/usage` are metadata, cost no GPU time, and are deliberately not
   throttled.

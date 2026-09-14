@@ -126,23 +126,10 @@ func TestChatCompletionStreamsServerSentEvents(t *testing.T) {
 	}
 }
 
-// A streamed reply has to be countable, or the host can only record it as
-// unmetered. Real engines report usage in the closing frame, so the mock has to
-// as well — otherwise the devnet can never show the meter working on streams,
-// which is the shape most interactive use actually takes.
-func TestStreamedReplyReportsUsageInTheClosingFrame(t *testing.T) {
-	srv := newMock(t)
-	resp := postJSON(t, srv.URL+"/v1/chat/completions", map[string]any{
-		"model":    "llama3.1:8b",
-		"stream":   true,
-		"messages": []map[string]string{{"role": "user", "content": "one two three"}},
-	})
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-
+// streamedUsage returns the usage object out of a streamed response, if any
+// frame carried one. Only the last such frame matters; earlier ones have none.
+func streamedUsage(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
 	var usage map[string]any
 	for _, frame := range strings.Split(string(raw), "\n\n") {
 		data, ok := strings.CutPrefix(strings.TrimSpace(frame), "data:")
@@ -153,11 +140,38 @@ func TestStreamedReplyReportsUsageInTheClosingFrame(t *testing.T) {
 		if err := json.Unmarshal([]byte(data), &parsed); err != nil {
 			continue
 		}
-		// Only the last frame carrying usage matters; earlier ones have none.
 		if reported, ok := parsed["usage"].(map[string]any); ok {
 			usage = reported
 		}
 	}
+	return usage
+}
+
+func streamChat(t *testing.T, srv *httptest.Server, payload map[string]any) []byte {
+	t.Helper()
+	resp := postJSON(t, srv.URL+"/v1/chat/completions", payload)
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// A streamed reply is only countable if the engine puts usage in the stream, and
+// an OpenAI-compatible engine only does that when the request asks. The mock
+// behaves the same way on purpose: it is the worse of the two real behaviours,
+// and the one the host has to work around.
+func TestStreamedReplyReportsUsageWhenAsked(t *testing.T) {
+	srv := newMock(t)
+	raw := streamChat(t, srv, map[string]any{
+		"model":          "llama3.1:8b",
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
+		"messages":       []map[string]string{{"role": "user", "content": "one two three"}},
+	})
+
+	usage := streamedUsage(t, raw)
 	if usage == nil {
 		t.Fatalf("no streamed frame carried usage, so a stream can only be unmetered: %q", string(raw))
 	}
@@ -165,6 +179,25 @@ func TestStreamedReplyReportsUsageInTheClosingFrame(t *testing.T) {
 		if n, _ := usage[field].(float64); n <= 0 {
 			t.Errorf("%s = %v, want > 0", field, usage[field])
 		}
+	}
+}
+
+// The other half of the same contract: without the ask, a compliant engine
+// reports nothing. If this ever passes with usage present, the mock has stopped
+// being a useful stand-in for the case that matters.
+func TestStreamedReplyReportsNothingWhenNotAsked(t *testing.T) {
+	srv := newMock(t)
+	raw := streamChat(t, srv, map[string]any{
+		"model":    "llama3.1:8b",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "one two three"}},
+	})
+
+	if usage := streamedUsage(t, raw); usage != nil {
+		t.Errorf("usage was reported without being asked for: %v", usage)
+	}
+	if !strings.Contains(string(raw), "data: [DONE]") {
+		t.Errorf("the stream did not terminate properly: %q", string(raw))
 	}
 }
 

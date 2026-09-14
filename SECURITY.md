@@ -86,4 +86,7 @@ These are documented rather than fixed, because fixing them is a design change:
    the operator forwards a port or runs a tunnel. The registry will happily list
    an address that does not work.
 3. Metering depends on the engine reporting usage. An engine that reports nothing
-   is recorded as unmetered, which is honest and also useless for accounting.
+   is recorded as unmetered, which is honest and also useless for accounting. The
+   host narrows this by asking for usage on streamed requests
+   (`stream_options.include_usage`), but an engine that ignores the ask, or a
+   request body over 1 MiB, stays uncounted.

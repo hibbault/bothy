@@ -54,7 +54,11 @@ type Config struct {
 	MaxConcurrent int
 	// RequestsPerMinute caps one peer's request rate. Zero means no cap.
 	RequestsPerMinute int
-	Engine            engine.Options
+	// StreamUsage asks the engine to report token usage on streamed replies, by
+	// adding stream_options.include_usage to streamed OpenAI requests. Without
+	// it, a host whose peers stream would meter nothing at all. See inject.go.
+	StreamUsage bool
+	Engine      engine.Options
 }
 
 // Host announces an engine's models, meters usage, and proxies to the engine.
@@ -85,6 +89,7 @@ func Run(ctx context.Context, log *slog.Logger, args []string) error {
 	fs.DurationVar(&cfg.Heartbeat, "heartbeat", config.Dur("BOTHY_HEARTBEAT", 20*time.Second), "how often to re-announce")
 	fs.IntVar(&cfg.MaxConcurrent, "max-concurrent", config.Int("BOTHY_MAX_CONCURRENT", 4), "requests to serve at once across all peers (0 = no cap)")
 	fs.IntVar(&cfg.RequestsPerMinute, "max-requests-per-minute", config.Int("BOTHY_MAX_REQUESTS_PER_MINUTE", 0), "request rate allowed per peer (0 = no cap)")
+	fs.BoolVar(&cfg.StreamUsage, "stream-usage", config.Bool("BOTHY_STREAM_USAGE", true), "ask the engine for token usage on streamed replies, so they can be metered")
 	fs.StringVar(&cfg.Engine.ModelsDir, "models-dir", config.Str("BOTHY_MODELS_DIR", ""), "Ollama models directory, for real weights digests")
 	fs.StringVar(&cfg.Engine.WeightsPath, "weights", config.Str("BOTHY_WEIGHTS_PATH", ""), "weights file to hash (.gguf/.safetensors)")
 	fs.StringVar(&cfg.Engine.WeightsModel, "model", config.Str("BOTHY_MODEL", ""), "model name the weights file belongs to")
@@ -238,6 +243,13 @@ func (h *Host) handleProxy(w http.ResponseWriter, r *http.Request) {
 		resp.Body = sniffer
 		return nil
 	}
+	// Ask for streamed usage before the body goes out. Without this a streamed
+	// reply arrives with no token counts and can only be metered as unreported,
+	// which is most interactive use.
+	if h.cfg.StreamUsage {
+		injectStreamUsage(r)
+	}
+
 	proxy.ServeHTTP(w, r)
 
 	var usage meter.Usage

@@ -140,6 +140,17 @@ type chatRequest struct {
 	Stream   bool      `json:"stream"`
 	Messages []message `json:"messages"`
 	Prompt   any       `json:"prompt"`
+	// An OpenAI-compatible engine reports usage on a stream only when the
+	// request asks for it. The mock does the same, deliberately: it is the worse
+	// of the two real behaviours, and the one the host has to work around.
+	StreamOptions *struct {
+		IncludeUsage bool `json:"include_usage"`
+	} `json:"stream_options"`
+}
+
+// wantsUsage reports whether the request asked for usage on a stream.
+func (r chatRequest) wantsUsage() bool {
+	return r.StreamOptions != nil && r.StreamOptions.IncludeUsage
 }
 
 // handleChat serves POST /v1/chat/completions, streaming when asked.
@@ -152,7 +163,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	prompt := lastUserMessage(req.Messages)
 	reply := s.reply(req.Model, prompt)
 	if req.Stream {
-		s.streamChat(r.Context(), w, req.Model, prompt, reply)
+		s.streamChat(r.Context(), w, req.Model, prompt, reply, req.wantsUsage())
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
@@ -180,7 +191,7 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	prompt := textOf(req.Prompt)
 	reply := s.reply(req.Model, prompt)
 	if req.Stream {
-		s.streamCompletion(r.Context(), w, req.Model, prompt, reply)
+		s.streamCompletion(r.Context(), w, req.Model, prompt, reply, req.wantsUsage())
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
@@ -211,7 +222,7 @@ func (s *Server) reply(reqModel, prompt string) string {
 	return fmt.Sprintf("[%s] model=%s digest=%s you-said=%q", s.Config.Name, reqModel, d, prompt)
 }
 
-func (s *Server) streamChat(ctx context.Context, w http.ResponseWriter, reqModel, prompt, text string) {
+func (s *Server) streamChat(ctx context.Context, w http.ResponseWriter, reqModel, prompt, text string, includeUsage bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		httpx.Error(w, http.StatusInternalServerError, "streaming unsupported by this server")
@@ -231,15 +242,19 @@ func (s *Server) streamChat(ctx context.Context, w http.ResponseWriter, reqModel
 			return
 		}
 	}
-	// The final frame carries the usage, as Ollama's does and as OpenAI's does
-	// when a client asks for it. Without it the host can only record a streamed
-	// request as unmetered — honest, and useless for knowing who used what.
-	writeChunk(w, flusher, "chat.completion.chunk", reqModel, "", "stop", usage(prompt, text))
+	// The closing frame carries the usage when it was asked for. A host that
+	// wants to meter a stream has to send stream_options.include_usage; this is
+	// the behaviour it is compensating for.
+	var reported map[string]any
+	if includeUsage {
+		reported = usage(prompt, text)
+	}
+	writeChunk(w, flusher, "chat.completion.chunk", reqModel, "", "stop", reported)
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
 
-func (s *Server) streamCompletion(ctx context.Context, w http.ResponseWriter, reqModel, prompt, text string) {
+func (s *Server) streamCompletion(ctx context.Context, w http.ResponseWriter, reqModel, prompt, text string, includeUsage bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		httpx.Error(w, http.StatusInternalServerError, "streaming unsupported by this server")
@@ -270,16 +285,19 @@ func (s *Server) streamCompletion(ctx context.Context, w http.ResponseWriter, re
 			return
 		}
 	}
-	// Same reasoning as streamChat: a closing frame with the usage, so a streamed
-	// completion is countable rather than merely noticed.
-	final, err := json.Marshal(map[string]any{
+	// Same reasoning as streamChat: a closing frame, carrying usage when the
+	// request asked for it.
+	closing := map[string]any{
 		"id":      "cmpl-mock",
 		"object":  "text_completion",
 		"created": time.Now().Unix(),
 		"model":   reqModel,
 		"choices": []any{map[string]any{"index": 0, "text": "", "finish_reason": "stop"}},
-		"usage":   usage(prompt, text),
-	})
+	}
+	if includeUsage {
+		closing["usage"] = usage(prompt, text)
+	}
+	final, err := json.Marshal(closing)
 	if err == nil {
 		fmt.Fprintf(w, "data: %s\n\n", final)
 		flusher.Flush()

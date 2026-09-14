@@ -49,9 +49,22 @@ by construction rather than by careful implementation, every OpenAI and Ollama
 endpoint works the day it ships upstream, and the only engine-specific code is a
 small lister that answers "what models do you have, and what are their digests?"
 
-The cost is that Bothy cannot understand request bodies it proxies. Counting
-tokens, for instance, has to be done by observing responses — see metering below.
-That is a real cost, and it is still much smaller than reimplementing an API.
+The cost is that Bothy mostly does not understand request bodies it proxies.
+Counting tokens has to be done by observing responses — see metering below. That
+is a real cost, and it is still much smaller than reimplementing an API.
+
+There is exactly one exception, and it is worth naming rather than leaving to be
+discovered in the diff. An OpenAI-compatible engine reports no usage on a stream
+unless the request asks for it, so a host whose peers all streamed would meter
+nothing, and streaming is how interactive use arrives. The host therefore adds
+`stream_options.include_usage` to streamed requests on the two OpenAI routes.
+
+It is kept as narrow as it can be: two routes, POST only, a body that has to
+parse as JSON already saying `stream: true`, no `stream_options` key of its own,
+under a megabyte, and switchable off. The rule it protects is that a proxy should
+not silently change what a caller asked for — so the moment a caller has an
+opinion, the rewrite stops. If a second exception ever seems necessary, that is
+the moment to reconsider the decision rather than add another.
 
 ### The client keeps Ollama's port
 

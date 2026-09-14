@@ -10,7 +10,27 @@ a connection if you care.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **The host asks its engine for streamed token usage.** An OpenAI-compatible
+  engine reports no usage on a stream unless the request asks for it, so a host
+  whose peers all streamed could serve for hours and meter nothing — which is the
+  commonest way anyone uses a GPU. Streamed requests on the two OpenAI routes now
+  go out with `stream_options.include_usage`. It is the only request body Bothy
+  ever rewrites: it never overrides a caller's own preference, it forwards bodies
+  over 1 MiB untouched rather than buffering them, and `BOTHY_STREAM_USAGE=false`
+  disables it for an engine that objects.
+- `BOTHY_STREAM_USAGE` / `-stream-usage` on `bothy share`, and a config helper for
+  booleans that accepts `yes`/`no`/`on`/`off`, because those spellings are what
+  end up in compose files and shell exports.
+
+### Changed
+
+- The mock engine now reports streamed usage only when it is asked, matching a
+  real OpenAI-compatible engine rather than being more generous than one. That
+  makes the devnet exercise the case the host exists to work around, and it turns
+  the CI assertion about streamed replies into a test of the injection instead of
+  a test of the mock's goodwill.
 
 ## [0.1.1] - 2026-09-14
 
@@ -47,7 +67,8 @@ fixed.
   (`stream_options.include_usage`) can still leave a streamed reply unmetered. The
   host does not inject that field, and the client does not either, because neither
   proxy rewrites request bodies — that is a design decision, not an oversight. It
-  is recorded in [README.md](README.md) rather than papered over.
+  is recorded in [README.md](README.md) rather than papered over. (Superseded: the
+  host now asks for streamed usage, in [Unreleased].)
 
 ## [0.1.0] - 2026-09-14
 

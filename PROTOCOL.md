@@ -135,11 +135,27 @@ Who is using the GPU.
 
 `peer` is the name from the host's key list, or `addr:<ip>` when the host is open.
 
-### Everything else — auth required, proxied verbatim
+### Everything else — auth required, proxied through
 
 Any other path is forwarded to the engine, including `/v1/chat/completions`,
 `/v1/models` and Ollama's `/api/*`. Responses stream through unbuffered, and the
 presented key is stripped before forwarding so it never reaches the engine.
+
+**One request body is ever rewritten.** On `POST /v1/chat/completions` and
+`POST /v1/completions`, when the caller asked to stream and only then, the host
+adds `"stream_options": {"include_usage": true}` before forwarding. An
+OpenAI-compatible engine reports no token usage on a stream without being asked,
+so a host whose peers all stream would otherwise meter nothing at all.
+
+Three limits keep that a narrow exception rather than a licence to edit requests:
+
+- A body that already carries a `stream_options` key is left exactly as it is. A
+  caller's explicit choice is never overridden, including one that asks for less.
+- A body over 1 MiB is forwarded untouched rather than read, so a prompt carrying
+  images does not become a buffer. Such a reply is reported as
+  `unmetered_responses`.
+- `BOTHY_STREAM_USAGE=false` (or `-stream-usage=false`) turns it off entirely, for
+  an engine that objects to the field.
 
 ### Refusals
 
@@ -214,6 +230,11 @@ In a stream, the numbers arrive in a later frame than the text, so the last
 non-zero value wins. An engine that reports nothing is recorded as
 `unmetered_responses`, never as zero — the host cannot invent a count it was
 never given.
+
+Because that is the common case rather than the rare one, the host asks for the
+numbers: a streamed OpenAI request goes out with
+`stream_options.include_usage`, as described under the host routes above. `total`
+is filled in when an engine omits it and the other two are known.
 
 ## Compatibility
 
