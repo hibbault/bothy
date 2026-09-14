@@ -1,13 +1,16 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/hibbault/bothy/internal/model"
 	"github.com/hibbault/bothy/internal/registry"
@@ -114,6 +117,82 @@ func TestStatusDigestVerified(t *testing.T) {
 			if got, _ := status["digest_verified"].(bool); got != tt.want {
 				t.Fatalf("digest_verified = %v, want %v (expected %q, actual %q)",
 					got, tt.want, tt.expected, tt.actual)
+			}
+		})
+	}
+}
+
+// A pinned digest the host cannot satisfy is a configuration error, not a
+// transient one: no amount of waiting will fix it. A client that started anyway
+// would serve an endpoint whose every request fails, with the reason arriving
+// after the user has already pointed an editor at it. So connect fails the
+// process and names the mismatch instead.
+func TestRunRefusesAPinnedDigestTheHostCannotSatisfy(t *testing.T) {
+	srv := hostOffering(t, []model.Model{{Name: "llama3.1:8b", Digest: digestB}})
+
+	err := Run(context.Background(), quietLog(), []string{
+		"-host", strings.TrimPrefix(srv.URL, "http://"),
+		"-model", "llama3.1:8b",
+		"-expected-digest", digestA,
+		"-listen", "127.0.0.1:0",
+	})
+	if err == nil {
+		t.Fatal("connect served a host whose weights are not the ones it was told to require")
+	}
+	var mismatch *MismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("err = %v (%T), want a *MismatchError so the refusal is legible at startup", err, err)
+	}
+	if !strings.Contains(err.Error(), "llama3.1:8b") {
+		t.Errorf("error %q does not name the model that could not be satisfied", err)
+	}
+}
+
+// The other half of that rule: nothing being reachable yet must not stop the
+// client from starting. Compose brings services up in whatever order it likes,
+// so a client that exited because its host had not booted would be the most
+// annoying possible failure — waiting is right here where waiting on a mismatch
+// is not.
+func TestRunServesWhenNothingIsReachableYet(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		why  string
+	}{
+		{
+			name: "the host is not up yet",
+			args: []string{"-host", "127.0.0.1:1"}, // nothing is listening on this port
+			why:  "a direct host that cannot be read yet is not fatal",
+		},
+		{
+			name: "the registry is not up yet",
+			args: []string{"-discovery-url", "http://127.0.0.1:1"},
+			why:  "a fleet that has not started is not fatal",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			args := append(append([]string{}, tc.args...),
+				"-model", "llama3.1:8b", "-listen", "127.0.0.1:0")
+			done := make(chan error, 1)
+			go func() { done <- Run(ctx, quietLog(), args) }()
+
+			select {
+			case err := <-done:
+				t.Fatalf("Run returned %v instead of serving: %s", err, tc.why)
+			case <-time.After(300 * time.Millisecond):
+			}
+
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Errorf("Run returned %v after a graceful cancel, want nil", err)
+				}
+			case <-time.After(8 * time.Second):
+				t.Fatal("Run did not shut down within 8s of its context being cancelled")
 			}
 		})
 	}

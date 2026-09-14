@@ -1,6 +1,7 @@
 package digest
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,5 +58,32 @@ func TestHasherPicksUpAChangedFile(t *testing.T) {
 func TestHasherReportsMissingFile(t *testing.T) {
 	if _, err := NewHasher().File(filepath.Join(t.TempDir(), "nope.gguf")); err == nil {
 		t.Fatal("expected an error for a missing weights file")
+	}
+}
+
+// File is called on a path that came out of configuration, so a missing file has
+// to come back as an error that names it rather than as a digest of nothing. A
+// digest is a promise about weights, and a wrong one is worse than none: it would
+// let a host advertise something verifiable that is not there.
+func TestFileRefusesPathsItCannotDigest(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent.gguf")
+	if got, err := File(missing); err == nil {
+		t.Errorf("File(%q) = %q, nil; want an error", missing, got)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("err for a missing file = %v, want it to wrap os.ErrNotExist", err)
+	} else if got != "" {
+		t.Errorf("File returned %q alongside an error, want empty", got)
+	}
+
+	// A directory opens happily and then fails to read. The distinction matters:
+	// a models-dir pointed one level off must not yield a digest of whatever
+	// little was readable.
+	dir := t.TempDir()
+	got, err := File(dir)
+	if err == nil {
+		t.Fatalf("File(%q) = %q, nil; want an error for a path that is not a file", dir, got)
+	}
+	if got != "" {
+		t.Errorf("File returned %q alongside an error, want empty", got)
 	}
 }

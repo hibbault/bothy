@@ -47,6 +47,29 @@ func TestExtractIgnoresObjectsWithNoCounts(t *testing.T) {
 	}
 }
 
+// An engine that reports a total and no breakdown is still reporting something,
+// and the total has to survive: recomputing it as 0+0 would record a fabricated
+// zero for a response that cost real tokens, in both the OpenAI and the flat
+// shape.
+func TestExtractKeepsAReportedTotalWithNoParts(t *testing.T) {
+	for _, body := range []string{
+		`{"usage":{"total_tokens":42}}`,
+		`{"total_tokens":42}`,
+	} {
+		usage, ok := Extract([]byte(body))
+		if !ok {
+			t.Errorf("Extract(%q) found no usage, but it reports a total", body)
+			continue
+		}
+		if usage.TotalTokens != 42 {
+			t.Errorf("Extract(%q).TotalTokens = %d, want 42", body, usage.TotalTokens)
+		}
+		if usage.PromptTokens != 0 || usage.CompletionTokens != 0 {
+			t.Errorf("Extract(%q) = %+v, want no invented parts", body, usage)
+		}
+	}
+}
+
 // chunkReader hands out bytes in exactly the pieces given, so a test can split a
 // stream anywhere — including mid-JSON, which is what a naive line parser gets
 // wrong.

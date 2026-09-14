@@ -267,21 +267,35 @@ func TestEnsureTargetRefusesAMismatch(t *testing.T) {
 	}
 }
 
-func TestEnsureTargetRefusesAnEntryWithNoAddress(t *testing.T) {
-	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]any{
-			"entries": []map[string]any{{"model": "m", "digest": "", "address": ""}},
-		})
-	}))
-	defer reg.Close()
+// The registry is a shared thing that anyone can publish into, so an entry whose
+// address is empty or unparseable has to become an error naming the problem
+// rather than a resolved target that fails on every request afterwards.
+func TestEnsureTargetRefusesAnEntryItCannotDial(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		address string
+		mustSay string
+	}{
+		{"no address at all", "", "no host"},
+		{"an address that is not a URL", "http://[::1", "host address"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				httpx.JSON(w, http.StatusOK, map[string]any{
+					"entries": []map[string]any{{"model": "m", "digest": "", "address": tc.address}},
+				})
+			}))
+			defer reg.Close()
 
-	c := New(Config{DiscoveryURL: reg.URL}, quietLog())
-	_, err := c.ensureTarget(context.Background())
-	if err == nil {
-		t.Fatal("an entry with no address was accepted")
-	}
-	if !strings.Contains(err.Error(), "no host") {
-		t.Errorf("error %q does not say the address was unusable", err)
+			c := New(Config{DiscoveryURL: reg.URL}, quietLog())
+			_, err := c.ensureTarget(context.Background())
+			if err == nil {
+				t.Fatalf("a registry entry with address %q was accepted", tc.address)
+			}
+			if !strings.Contains(err.Error(), tc.mustSay) {
+				t.Errorf("error %q does not contain %q", err, tc.mustSay)
+			}
+		})
 	}
 }
 

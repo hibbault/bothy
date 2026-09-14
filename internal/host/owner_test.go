@@ -418,3 +418,43 @@ func TestAReserveThatLeavesNoRoomForPeersIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// The control endpoint is a button, and buttons get pressed twice. Pausing again
+// changes nothing, so it must not re-announce: a repeated call from a script
+// would otherwise let one key hammer a registry by pressing it, and the wake
+// channel is the only place that extra announce would come from.
+func TestPausingTwiceIsTheSameAsPausingOnce(t *testing.T) {
+	h := newTestHost(t, Config{ShareKey: "k", MaxConcurrent: 4, AdminKey: "admin-secret"})
+
+	wakes := func() int {
+		n := 0
+		for {
+			select {
+			case <-h.wake:
+				n++
+			default:
+				return n
+			}
+		}
+	}
+
+	do(h, http.MethodPost, "/bothy/sharing", "admin-secret", `{"paused": true}`)
+	if got := wakes(); got != 1 {
+		t.Fatalf("wakes after the first pause = %d, want 1: pausing has to be visible to clients", got)
+	}
+	do(h, http.MethodPost, "/bothy/sharing", "admin-secret", `{"paused": true}`)
+	if got := wakes(); got != 0 {
+		t.Errorf("wakes after pausing again = %d, want 0: nothing changed, so there is nothing to tell anyone", got)
+	}
+
+	// Resuming is a change, and the whole point of the wake channel is that it is
+	// seen now rather than at the next heartbeat.
+	do(h, http.MethodPost, "/bothy/sharing", "admin-secret", `{"paused": false}`)
+	if got := wakes(); got != 1 {
+		t.Errorf("wakes after resuming = %d, want 1", got)
+	}
+	do(h, http.MethodPost, "/bothy/sharing", "admin-secret", `{"paused": false}`)
+	if got := wakes(); got != 0 {
+		t.Errorf("wakes after resuming again = %d, want 0", got)
+	}
+}

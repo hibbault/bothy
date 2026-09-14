@@ -67,6 +67,39 @@ func TestServeServesThenShutsDownOnCancel(t *testing.T) {
 	}
 }
 
+// A role that cannot bind has to fail with the reason rather than start up and
+// sit there. Four containers are launched together by compose, and a process
+// that swallowed a bind error would look exactly like a service that is up and
+// idle — including to its own healthcheck-less siblings, which would then wait
+// on an address nobody is listening to.
+func TestServeReturnsTheBindErrorInsteadOfHanging(t *testing.T) {
+	// Hold the port, so Serve's own bind is the one that fails.
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	addr := held.Addr().String()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), addr, http.NotFoundHandler(), log)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Serve returned nil after failing to bind, so nothing would ever be retried or reported")
+		}
+		if !strings.Contains(err.Error(), "address already in use") {
+			t.Errorf("error %q does not say the port was taken", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve neither bound nor failed within 5s on a port that was already taken")
+	}
+}
+
 // An empty token means open, which callers are supposed to warn about; a set
 // token means every route behind it is closed.
 func TestRequireToken(t *testing.T) {

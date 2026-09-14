@@ -279,6 +279,26 @@ func TestDescribeLimitsNamesWhatIsConfigured(t *testing.T) {
 	}
 }
 
+// Starting paused is a supported way to say "not right now", and it is the one
+// state where a host serves nobody while looking perfectly healthy. So it says so
+// at startup rather than being discovered from a peer's 503 later.
+func TestDescribeLimitsWarnsWhenStartingPaused(t *testing.T) {
+	log, buf := capturedLog()
+	h := hostLoggingTo(t, Config{Paused: true}, log)
+
+	h.describeLimits()
+	if said := buf.String(); !strings.Contains(said, "starting paused") {
+		t.Errorf("a host that starts paused never said so:\n%s", said)
+	}
+
+	// And a host that is not paused must not cry wolf.
+	log, buf = capturedLog()
+	hostLoggingTo(t, Config{}, log).describeLimits()
+	if said := buf.String(); strings.Contains(said, "starting paused") {
+		t.Errorf("a host that is sharing normally claimed to be paused:\n%s", said)
+	}
+}
+
 // The advertised address is what peers dial, so a host listening on every
 // interface must not advertise ":7777" — that is not something anyone can reach.
 func TestDefaultAddressIsDialable(t *testing.T) {

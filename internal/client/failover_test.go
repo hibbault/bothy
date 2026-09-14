@@ -92,6 +92,55 @@ func TestClientReResolvesAfterTheHostDisappears(t *testing.T) {
 	}
 }
 
+// A client is allowed to start with nothing to route to — a fleet that is not up
+// yet comes up later, and the first request re-resolves. But a *request* that
+// arrives while there is still nowhere to go has to fail at once and say why:
+// anything else turns an editor's next keystroke into a hang that ends in the
+// editor's own timeout, with nothing anywhere saying what was missing.
+func TestARequestWithNowhereToRouteFailsCleanly(t *testing.T) {
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		httpx.JSON(w, http.StatusOK, map[string]any{"entries": []any{}})
+	}))
+	defer empty.Close()
+
+	for _, tc := range []struct {
+		name    string
+		cfg     Config
+		mustSay string
+	}{
+		{
+			name:    "no host and no registry",
+			cfg:     Config{Model: "llama3.1:8b"},
+			mustSay: "-host",
+		},
+		{
+			name:    "a registry where nobody is offering this model",
+			cfg:     Config{DiscoveryURL: empty.URL, Model: "llama3.1:8b"},
+			mustSay: "llama3.1:8b",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(New(tc.cfg, quietLog()).Handler())
+			defer srv.Close()
+
+			resp, err := (&http.Client{Timeout: 5 * time.Second}).Post(srv.URL+"/v1/chat/completions",
+				"application/json", strings.NewReader(`{"model":"llama3.1:8b","messages":[]}`))
+			if err != nil {
+				t.Fatalf("the local endpoint failed outright instead of answering with a reason: %v", err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Errorf("status = %d, want 502 when there is nothing to route to", resp.StatusCode)
+			}
+			if !strings.Contains(string(body), tc.mustSay) {
+				t.Errorf("body %q does not contain %q, so the caller cannot tell what is missing", body, tc.mustSay)
+			}
+		})
+	}
+}
+
 // A client pointed straight at an address has no registry to re-resolve against,
 // so the failure has to stay a clear one rather than becoming a panic or a hang.
 func TestClientWithADirectAddressFailsCleanly(t *testing.T) {
