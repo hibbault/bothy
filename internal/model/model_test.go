@@ -84,3 +84,25 @@ func TestParseList(t *testing.T) {
 		t.Fatalf("ParseList(\"\") = %+v, %v; want no models and no error", got, err)
 	}
 }
+
+// FormatList is how a host says in its log what it is serving, so it has to be
+// the inverse of ParseList rather than something that merely looks similar.
+func TestFormatListRoundTrips(t *testing.T) {
+	const spec = "llama3.1:8b=sha256:aa,qwen2.5:7b=sha256:bb"
+	models, err := ParseList(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := FormatList(models); got != spec {
+		t.Fatalf("FormatList = %q, want %q", got, spec)
+	}
+
+	// An engine that cannot report a digest still has a name worth printing, and
+	// printing "name=" for it would look like a missing value rather than none.
+	if got := FormatList([]Model{{Name: "plain"}}); got != "plain" {
+		t.Fatalf("FormatList = %q, want a bare name", got)
+	}
+	if got := FormatList(nil); got != "" {
+		t.Fatalf("FormatList(nil) = %q, want empty", got)
+	}
+}

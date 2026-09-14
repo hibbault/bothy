@@ -56,6 +56,16 @@ a task runner behind a build tag.
 - `/bothy/healthz` and `/bothy/usage` report `owner_reserve`, `peer_slots`,
   `peer_quota` and `paused`.
 
+### Fixed
+
+- A non-positive `-heartbeat` / `BOTHY_HEARTBEAT` is refused at startup. It used
+  to reach `time.NewTicker` in the announce loop, which panics, so a zero left in
+  an environment file was a crash inside a goroutine rather than an error naming
+  the setting.
+- A non-positive `-ttl` / `BOTHY_REGISTRY_TTL` is refused at startup. Every
+  registration expired on arrival, so the registry answered every lookup with
+  nothing while reporting itself healthy.
+
 ### Added — experimental
 
 An experimental task runner, added as a plugin rather than a feature: it is
@@ -79,7 +89,9 @@ nothing uses, `needs` requirements the runner cannot honour, and a misspelled
 field. All refused at load time, before any GPU is touched.
 - `make swarm` and `make swarm-check`, plus a CI job that first asserts a default
 build contains no trace of the swarm and then runs the loop end to end against the
-mock engine.### Notes — experimental
+mock engine.
+
+### Notes — experimental
 
 - `make check` does not test the swarm, deliberately: a contributor should not
   meet experimental code unless they asked for it. `make swarm-check` does, and CI

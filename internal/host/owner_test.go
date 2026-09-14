@@ -388,6 +388,13 @@ func TestAReserveThatLeavesNoRoomForPeersIsRefused(t *testing.T) {
 			cfg:     Config{MaxConcurrent: 2, OwnerReserve: -1},
 			wantErr: "negative",
 		},
+		{
+			// A heartbeat of zero reaches time.NewTicker, which panics: the host
+			// must refuse to start instead of dying on its first announce.
+			name:    "the heartbeat would panic the announce loop",
+			cfg:     Config{MaxConcurrent: 2, Heartbeat: -1},
+			wantErr: "heartbeat",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := tc.cfg
@@ -396,7 +403,9 @@ func TestAReserveThatLeavesNoRoomForPeersIsRefused(t *testing.T) {
 			cfg.EngineKind = "static"
 			cfg.EngineURL = "http://127.0.0.1:1"
 			cfg.PublicAddress = "host:7777"
-			cfg.Heartbeat = time.Hour
+			if cfg.Heartbeat == 0 {
+				cfg.Heartbeat = time.Hour
+			}
 			cfg.Engine.Static = testModels()
 
 			_, err := New(cfg, testLogger())

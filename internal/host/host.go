@@ -164,6 +164,12 @@ func New(cfg Config, log *slog.Logger) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Refused rather than left to the announce loop: time.NewTicker panics on a
+	// non-positive interval, so a heartbeat of 0 from an environment variable
+	// would be a crash inside a goroutine instead of a startup error.
+	if cfg.Heartbeat <= 0 {
+		return nil, fmt.Errorf("heartbeat %s must be positive: the host re-announces on that interval, and a non-positive one would panic rather than announce", cfg.Heartbeat)
+	}
 	if cfg.OwnerReserve < 0 {
 		return nil, fmt.Errorf("owner-reserve %d is negative, which would hand peers more slots than the cap allows", cfg.OwnerReserve)
 	}

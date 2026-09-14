@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -48,6 +49,12 @@ func Run(ctx context.Context, log *slog.Logger, args []string) error {
 	token := fs.String("register-token", config.Str("BOTHY_REGISTRY_TOKEN", ""), "token required to register (optional)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// A TTL of zero or less expires every registration the moment it arrives, so
+	// the registry would answer every lookup with nothing while looking healthy.
+	// That is a misconfiguration, and it says so here instead.
+	if *ttl <= 0 {
+		return fmt.Errorf("ttl %s must be positive: an entry that expires on arrival leaves the registry serving nobody", *ttl)
 	}
 	s := NewServer(Config{TTL: *ttl, Token: *token}, log)
 	if *token == "" {
