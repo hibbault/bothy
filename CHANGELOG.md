@@ -49,11 +49,13 @@ see [SECURITY.md](SECURITY.md).
   an end-to-end job that starts all four roles as ordinary processes and asserts
   a completion proxied through the client, a `401` without a share key, a refused
   digest, and a metered usage row.
-- Two things still ship unverified by their author, because the development
-  environment had no Docker and no Python: the Docker image with its compose
-  profiles, and `examples/python/bothy_client.py`. Everything they touch on the
-  Go side is covered by the checks above — what is unproven is the packaging
-  around it, not the behaviour.
+- The Dockerfile is proven, because the release builds it: `v0.1.0` was built and
+  pushed as a multi-arch image for `linux/amd64` and `linux/arm64`.
+- Still unverified by their author, because the development environment had no
+  Docker and no Python: **the compose profiles have never been started**, and
+  `examples/python/bothy_client.py` has never been run. Both sit on top of Go
+  code the checks above cover — what is unproven is the packaging around it, not
+  the behaviour.
 - The meter is on the seller's hardware and a digest is a claim rather than
   proof, which is why there is no payment anywhere in this release.
 
