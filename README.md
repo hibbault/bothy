@@ -192,15 +192,16 @@ bytes and refusals, per peer.
 
 ```sh
 curl -H 'X-Bothy-Key: key-a' http://localhost:7777/bothy/usage
-```
-
-```json
-{ "in_flight": 1, "capacity": 3, "max_concurrent": 4,
+``````json
+{ "in_flight": 1, "capacity": 3, "max_concurrent": 4, "owner_reserve": 1,
+  "peer_slots": 3, "peer_quota": "200/1h", "paused": false,
   "peers": [
     { "peer": "alice", "requests": 3, "prompt_tokens": 6,
       "completion_tokens": 15, "limited": 0,
-      "unmetered_responses": 0, "response_bytes": 1476 }
-  ] }
+      "unmetered_responses": 0, "response_bytes": 1476,
+      "quota_used": 3, "quota_reset": "2026-09-14T11:01:44Z" }
+  ]
+}
 ```
 
 The names come from per-peer keys:
@@ -212,17 +213,58 @@ bothy share -share-keys alice:key-a,bob:key-b -max-concurrent 4
 Without them you get one row per caller address. That is still enough to see
 that *someone* is pinning the GPU — just not who.
 
-Two limits, both optional:
+### Sharing should not mean giving your GPU away
 
+Four knobs, all optional, and the first one is on by default:
+
+- **`BOTHY_OWNER_RESERVE`** (default **1**) keeps that many of
+  `BOTHY_MAX_CONCURRENT` out of peers' reach, so your own request never queues
+  behind strangers. Bothy's own traffic never passes through the host and no
+  portable engine API reports whether an engine is busy, so this is not a reading
+  of what you are doing — it is a guarantee of headroom, which is the only honest
+  shape available for it.
 - **`BOTHY_MAX_CONCURRENT`** (default 4) caps requests in flight across the whole
   host. A GPU serialises work anyway, so this is the limit that actually protects
   it. Over it, the host answers `429` with a `Retry-After`.
+- **`BOTHY_PEER_QUOTA`** (default off) is a sustained budget, written as
+  `count/period` — `200/1h` is 200 requests, and then wait for the window. This is
+  what stops one person using your GPU all day: a rate limit only slows them down,
+  because 30 a minute is still 43,200 a day.
 - **`BOTHY_MAX_REQUESTS_PER_MINUTE`** (default 0, off) caps one peer's request
   rate, with a burst of the same size.
 
-Free slots are also advertised in the registry as each host's `capacity`, which
-is how a client can route to whichever host is least busy rather than to
-whichever registered first.
+A budget counts **requests, not tokens**, and that is a limitation rather than a
+preference. Tokens are known only after a response has been produced, so a token
+budget could only ever be enforced after the fact — and an engine that reports no
+usage, which is allowed, would evade it entirely. Requests are counted before the
+work starts, so a request budget always binds. The tokens are still in the usage
+report for whoever is judging by them.
+
+Free slots are advertised in the registry as each host's `capacity`, which is how
+a client routes to whichever host is least busy rather than to whichever
+registered first. That figure is free *peer* slots, so a host whose only free slot
+is the reserve looks full to everybody else — and a client needs to understand
+none of it.
+
+### "Not right now"
+
+Stopping the host works, but it also drops it out of the registry and leaves
+connected clients with a connection error rather than an answer. Set an admin key
+and you can pause instead:
+
+```sh
+bothy share -admin-key a-secret
+
+curl -X POST http://localhost:7777/bothy/sharing \
+  -H 'X-Bothy-Key: a-secret' -d '{"paused": true}'
+```
+
+Peers get a `503` that says what happened, the host stops announcing itself so
+clients route elsewhere, and your own engine is untouched throughout. One boolean
+in one POST means a sharing schedule is two cron entries — pause at 9am, resume at
+6pm. Without `-admin-key` there is no control endpoint at all, and it is
+deliberately not a share key: peers hold those, and a peer who can stop your host
+is worse than no control.
 
 Three honest caveats:
 
@@ -307,7 +349,10 @@ configured. Run any command with `-h`. The important ones:
 | `BOTHY_DISCOVERY_URL` | both | registry to announce to / look up in |
 | `BOTHY_SHARE_KEYS` | host | per-peer keys, `alice:key,bob:key`; wins over `BOTHY_SHARE_KEY` |
 | `BOTHY_MAX_CONCURRENT` | host | requests served at once (default 4; 0 = no cap) |
+| `BOTHY_OWNER_RESERVE` | host | of that cap, slots peers may not use (default 1) |
+| `BOTHY_PEER_QUOTA` | host | per-peer request budget as `count/period`, e.g. `200/1h` |
 | `BOTHY_MAX_REQUESTS_PER_MINUTE` | host | per-peer request rate (default 0 = no cap) |
+| `BOTHY_ADMIN_KEY` | host | key for `POST /bothy/sharing`; unset means no control surface |
 | `BOTHY_MODELS_DIR` | host | Ollama models dir, for real weights digests |
 | `BOTHY_MODEL` / `BOTHY_EXPECTED_DIGEST` | client | what to use, and what to insist on |
 | `BOTHY_HOST` | client | skip discovery and connect straight to an address |

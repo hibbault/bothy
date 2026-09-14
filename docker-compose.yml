@@ -126,8 +126,19 @@ services:
       # Requests served at once across the whole host. A GPU serialises work
       # anyway, so this is the limit that protects it. 0 disables the cap.
       BOTHY_MAX_CONCURRENT: "2"
+      # Of that cap, how many peers may not use — so the machine's owner always
+      # has headroom. At the default of 1 this host serves one peer at a time,
+      # which is what `--scale client=5` runs into.
+      BOTHY_OWNER_RESERVE: "1"
+      # A per-peer request budget, which is what stops one person using the GPU
+      # all day. A rate limit only slows them down. Empty disables it.
+      BOTHY_PEER_QUOTA: ""
       # Per-peer request rate, to limit one noisy consumer. 0 disables it.
       BOTHY_MAX_REQUESTS_PER_MINUTE: "0"
+      # Without an admin key there is no control endpoint at all. With one,
+      # POST /bothy/sharing pauses and resumes sharing without stopping this
+      # container — and a peer's share key cannot reach it.
+      #   BOTHY_ADMIN_KEY: "dev-admin-key"
     ports:
       - "7777:7777"
     # Deliberately NOT depending on an engine: Compose starts profile-gated

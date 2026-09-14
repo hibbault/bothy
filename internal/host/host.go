@@ -9,9 +9,12 @@ package host
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -19,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -52,8 +56,22 @@ type Config struct {
 	// serialises work anyway, so this is the limit that really protects it.
 	// Zero means no cap.
 	MaxConcurrent int
+	// OwnerReserve is how many of MaxConcurrent are kept for you, out of reach of
+	// peers. One by default: sharing your machine should not mean losing it.
+	OwnerReserve int
+	// PeerQuota is a per-peer request budget, as "count/period" — 200/1h. Empty
+	// means no budget, and a peer may use the GPU all day a request at a time.
+	PeerQuota string
 	// RequestsPerMinute caps one peer's request rate. Zero means no cap.
 	RequestsPerMinute int
+	// AdminKey guards the /bothy/sharing control endpoint. Without it there is no
+	// remote control at all. It is deliberately not a share key: peers hold
+	// those, and a peer who can pause your host is worse than no control.
+	AdminKey string
+	// Paused starts the host refusing peers. It is what makes a schedule
+	// possible — pause and resume from cron — without a stop that also drops the
+	// registration.
+	Paused bool
 	// StreamUsage asks the engine to report token usage on streamed replies, by
 	// adding stream_options.include_usage to streamed OpenAI requests. Without
 	// it, a host whose peers stream would meter nothing at all. See inject.go.
@@ -72,6 +90,13 @@ type Host struct {
 	log    *slog.Logger
 	name   string
 	models atomic.Pointer[[]model.Model]
+	// paused is the owner's hand on the tap. pausedAt is when it last went on,
+	// zero when it is off.
+	paused   atomic.Bool
+	pausedAt atomic.Int64
+	// wake asks the announce loop to re-announce now rather than at the next
+	// heartbeat, so resuming does not leave clients waiting one out.
+	wake chan struct{}
 }
 
 // Run parses flags for the "share" command and serves until ctx is cancelled.
@@ -88,7 +113,11 @@ func Run(ctx context.Context, log *slog.Logger, args []string) error {
 	fs.StringVar(&cfg.PublicAddress, "address", config.Str("BOTHY_PUBLIC_ADDRESS", ""), "address to advertise to clients (default: hostname plus listen port)")
 	fs.DurationVar(&cfg.Heartbeat, "heartbeat", config.Dur("BOTHY_HEARTBEAT", 20*time.Second), "how often to re-announce")
 	fs.IntVar(&cfg.MaxConcurrent, "max-concurrent", config.Int("BOTHY_MAX_CONCURRENT", 4), "requests to serve at once across all peers (0 = no cap)")
+	fs.IntVar(&cfg.OwnerReserve, "owner-reserve", config.Int("BOTHY_OWNER_RESERVE", 1), "of max-concurrent, how many slots peers may not use (default 1, keeping one free for you)")
+	fs.StringVar(&cfg.PeerQuota, "peer-quota", config.Str("BOTHY_PEER_QUOTA", ""), "per-peer request budget as count/period, e.g. 200/1h (empty = no budget)")
 	fs.IntVar(&cfg.RequestsPerMinute, "max-requests-per-minute", config.Int("BOTHY_MAX_REQUESTS_PER_MINUTE", 0), "request rate allowed per peer (0 = no cap)")
+	fs.StringVar(&cfg.AdminKey, "admin-key", config.Str("BOTHY_ADMIN_KEY", ""), "key for POST /bothy/sharing, which pauses and resumes sharing (empty = remote control disabled)")
+	fs.BoolVar(&cfg.Paused, "paused", config.Bool("BOTHY_PAUSED", false), "start paused: refuse peers until resumed")
 	fs.BoolVar(&cfg.StreamUsage, "stream-usage", config.Bool("BOTHY_STREAM_USAGE", true), "ask the engine for token usage on streamed replies, so they can be metered")
 	fs.StringVar(&cfg.Engine.ModelsDir, "models-dir", config.Str("BOTHY_MODELS_DIR", ""), "Ollama models directory, for real weights digests")
 	fs.StringVar(&cfg.Engine.WeightsPath, "weights", config.Str("BOTHY_WEIGHTS_PATH", ""), "weights file to hash (.gguf/.safetensors)")
@@ -131,6 +160,19 @@ func New(cfg Config, log *slog.Logger) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
+	quota, err := parseQuota(cfg.PeerQuota)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.OwnerReserve < 0 {
+		return nil, fmt.Errorf("owner-reserve %d is negative, which would hand peers more slots than the cap allows", cfg.OwnerReserve)
+	}
+	// Refused rather than warned about: a reserve that swallows the whole cap is
+	// a misconfiguration that looks like a working host serving nobody. Pausing
+	// is the way to say "not right now", and it says so out loud.
+	if cfg.MaxConcurrent > 0 && cfg.OwnerReserve >= cfg.MaxConcurrent {
+		return nil, fmt.Errorf("owner-reserve %d leaves no slots for peers under max-concurrent %d: use -owner-reserve 0, raise -max-concurrent, or start with -paused", cfg.OwnerReserve, cfg.MaxConcurrent)
+	}
 
 	h := &Host{
 		cfg:    cfg,
@@ -138,10 +180,17 @@ func New(cfg Config, log *slog.Logger) (*Host, error) {
 		log:    log,
 		name:   hostname(),
 		peers:  configured,
+		wake:   make(chan struct{}, 1),
 		meter: meter.New(meter.Options{
 			MaxConcurrent:     cfg.MaxConcurrent,
+			OwnerReserve:      cfg.OwnerReserve,
+			PeerQuota:         quota,
 			RequestsPerMinute: cfg.RequestsPerMinute,
 		}),
+	}
+	if cfg.Paused {
+		h.paused.Store(true)
+		h.pausedAt.Store(time.Now().Unix())
 	}
 	h.proxy = newEngineProxy(target)
 	if cfg.DiscoveryURL != "" {
@@ -160,6 +209,11 @@ func (h *Host) Handler() http.Handler {
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /bothy/healthz", h.handleHealth)
+	// The control endpoint sits on the root mux, outside the share-key
+	// middleware, because it answers to the admin key instead. Share keys are
+	// handed to peers, and a peer who can stop your host is worse than no control
+	// at all.
+	root.HandleFunc("POST /bothy/sharing", h.handleSharing)
 	root.Handle("/", h.authenticate(api))
 	return httpx.LogRequests(h.log, root)
 }
@@ -190,8 +244,27 @@ func (h *Host) describeLimits() {
 	if h.cfg.MaxConcurrent <= 0 {
 		h.log.Warn("no concurrency cap: a single peer can occupy the GPU indefinitely")
 	}
+	switch {
+	case h.cfg.OwnerReserve <= 0:
+		h.log.Info("no slots kept back for you: peers may use every slot the cap allows")
+	case h.cfg.MaxConcurrent <= 0:
+		h.log.Warn("owner-reserve has no effect without a concurrency cap", "owner_reserve", h.cfg.OwnerReserve)
+	default:
+		h.log.Info("slots kept for you", "owner_reserve", h.cfg.OwnerReserve, "peer_slots", h.meter.PeerSlots())
+	}
+	if q := h.meter.Quota(); q.Enabled() {
+		h.log.Info("per-peer budget", "requests", q.Requests, "window", q.Window.String())
+	} else {
+		h.log.Info("no per-peer budget: a peer may use the GPU all day, a request at a time")
+	}
 	if h.cfg.RequestsPerMinute <= 0 {
 		h.log.Info("no per-peer request rate cap")
+	}
+	if h.cfg.AdminKey == "" {
+		h.log.Info("no admin key: sharing cannot be paused remotely")
+	}
+	if h.paused.Load() {
+		h.log.Warn("starting paused: peers are refused until you resume")
 	}
 }
 
@@ -216,6 +289,16 @@ func (h *Host) authenticate(next http.Handler) http.Handler {
 func (h *Host) handleProxy(w http.ResponseWriter, r *http.Request) {
 	peer := peerFrom(r.Context())
 	start := time.Now()
+
+	// Paused is checked before the meter, on purpose. The refusal is not the
+	// peer's doing, so it must not count against their budget, and 503 with a
+	// reason says "not now" rather than the 429 that means "too fast" — which is
+	// also the one answer a client should treat as try-somewhere-else.
+	if h.paused.Load() {
+		h.log.Info("refused", "peer", peer, "reason", "paused", "path", r.URL.Path)
+		httpx.Error(w, http.StatusServiceUnavailable, "the owner has paused sharing; this host is not serving peers right now")
+		return
+	}
 
 	if err := h.meter.Begin(peer, start); err != nil {
 		var limit *meter.LimitError
@@ -286,7 +369,11 @@ func (h *Host) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"in_flight":           h.meter.InFlight(),
 		"capacity":            h.meter.Capacity(),
 		"max_concurrent":      h.cfg.MaxConcurrent,
+		"owner_reserve":       h.cfg.OwnerReserve,
+		"peer_slots":          h.meter.PeerSlots(),
 		"requests_per_minute": h.cfg.RequestsPerMinute,
+		"peer_quota":          h.cfg.PeerQuota,
+		"paused":              h.paused.Load(),
 	})
 }
 
@@ -309,9 +396,91 @@ func (h *Host) handleUsage(w http.ResponseWriter, _ *http.Request) {
 		"in_flight":           h.meter.InFlight(),
 		"capacity":            h.meter.Capacity(),
 		"max_concurrent":      h.cfg.MaxConcurrent,
+		"owner_reserve":       h.cfg.OwnerReserve,
+		"peer_slots":          h.meter.PeerSlots(),
 		"requests_per_minute": h.cfg.RequestsPerMinute,
+		"peer_quota":          h.cfg.PeerQuota,
+		"paused":              h.paused.Load(),
 		"peers":               h.meter.Snapshot(),
 	})
+}
+
+// handleSharing pauses and resumes sharing, so that "not right now" does not have
+// to mean stopping the process. Stopping works, but it also drops the host out of
+// the registry and leaves clients with a connection error rather than an answer;
+// this says what is happening.
+func (h *Host) handleSharing(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.AdminKey == "" {
+		// 404 rather than 403: without a key there is no control surface here at
+		// all, and implying one exists that refused you would be a lie.
+		httpx.Error(w, http.StatusNotFound, "no admin key is set, so remote control is disabled; start the host with -admin-key to enable it")
+		return
+	}
+	presented := []byte(httpx.TokenFrom(r, httpx.KeyHeader))
+	if subtle.ConstantTimeCompare(presented, []byte(h.cfg.AdminKey)) != 1 {
+		httpx.Error(w, http.StatusUnauthorized, "missing or invalid admin key")
+		return
+	}
+	var body struct {
+		Paused *bool `json:"paused"`
+	}
+	// A bound on the body: this endpoint is meant to be reachable from wherever
+	// the owner happens to be.
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&body); err != nil || body.Paused == nil {
+		httpx.Error(w, http.StatusBadRequest, `send {"paused": true} to stop serving peers, or {"paused": false} to resume`)
+		return
+	}
+	h.setPaused(*body.Paused)
+	httpx.JSON(w, http.StatusOK, h.sharingState())
+}
+
+// setPaused flips the tap and nudges the announce loop, so a resume is visible to
+// clients straight away rather than at the next heartbeat.
+func (h *Host) setPaused(paused bool) {
+	if h.paused.Swap(paused) == paused {
+		return
+	}
+	if paused {
+		h.pausedAt.Store(time.Now().Unix())
+		h.log.Warn("sharing paused: peers are refused with 503, and this host will stop being advertised as its registry entry expires")
+	} else {
+		h.pausedAt.Store(0)
+		h.log.Info("sharing resumed")
+	}
+	select {
+	case h.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (h *Host) sharingState() map[string]any {
+	state := map[string]any{"paused": h.paused.Load()}
+	if since := h.pausedAt.Load(); since != 0 {
+		state["since"] = time.Unix(since, 0).UTC().Format(time.RFC3339)
+	}
+	return state
+}
+
+// parseQuota reads "200/1h" into a budget, at startup, so that a typo is an error
+// rather than a limit that silently does nothing.
+func parseQuota(spec string) (meter.Quota, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return meter.Quota{}, nil
+	}
+	count, period, ok := strings.Cut(spec, "/")
+	if !ok {
+		return meter.Quota{}, fmt.Errorf("peer quota %q: want count/period, e.g. 200/1h", spec)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(count))
+	if err != nil || n <= 0 {
+		return meter.Quota{}, fmt.Errorf("peer quota %q: %q is not a positive number of requests", spec, strings.TrimSpace(count))
+	}
+	window, err := time.ParseDuration(strings.TrimSpace(period))
+	if err != nil || window <= 0 {
+		return meter.Quota{}, fmt.Errorf("peer quota %q: %q is not a duration like 1h or 24h", spec, strings.TrimSpace(period))
+	}
+	return meter.Quota{Requests: n, Window: window}, nil
 }
 
 func (h *Host) currentModels() []model.Model {
@@ -333,6 +502,10 @@ func (h *Host) announceLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			h.announce(ctx)
+		case <-h.wake:
+			// Asked to rather than due: resuming should be visible now, not one
+			// heartbeat from now.
+			h.announce(ctx)
 		}
 	}
 }
@@ -346,6 +519,14 @@ func (h *Host) announce(ctx context.Context) {
 	h.models.Store(&models)
 	h.log.Info("engine models", "models", model.FormatList(models))
 
+	if h.paused.Load() {
+		// Stop announcing while paused, so clients route to somebody else rather
+		// than to a host that will refuse them. There is no delete in the
+		// registry protocol, so "stop saying it" is the mechanism, and the entry
+		// then expires on the registry's own TTL.
+		h.log.Info("paused: not announcing; this host's registry entry will expire on its own")
+		return
+	}
 	if h.disc == nil {
 		return
 	}

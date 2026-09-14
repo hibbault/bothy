@@ -10,11 +10,57 @@ a connection if you care.
 
 ## [Unreleased]
 
-A task runner, added as an experimental plugin rather than a feature: it is
-build-tagged, it is in no release binary, and PROTOCOL.md does not cover it. The
-GPU-sharing product is unchanged by every word of this section.
+Two independent things: sharing a GPU no longer means giving it away, and there is
+a task runner behind a build tag.
 
 ### Added
+
+- **The owner keeps a slot.** `-owner-reserve` (default 1) holds that many of
+  `-max-concurrent` out of peers' reach, so your own request never queues behind
+  four strangers. It is a guarantee of headroom rather than a measurement of what
+  you are doing — your own traffic never passes through the host, and no portable
+  engine API reports whether an engine is busy, so there is no signal to detect.
+  The reservation is applied inside the `capacity` a host already advertises, so a
+  host whose last free slot is the owner's simply looks full and clients route
+  elsewhere without needing to know why.
+- **Per-peer budgets.** `-peer-quota 200/1h` is 200 requests and then wait for the
+  window to turn over, which is what stops one person using your GPU all day; a
+  rate limit only slows them down, since 30 a minute is still 43,200 a day. It
+  counts **requests, not tokens**, deliberately: tokens are known only after a
+  response has been produced, so a token budget could only be enforced after the
+  fact, and an engine that reports no usage — which is allowed — would evade it
+  entirely.
+- **`POST /bothy/sharing`**, guarded by `-admin-key`, pauses and resumes sharing
+  without stopping the process. Peers get a `503` saying what happened, the host
+  stops announcing itself so clients route elsewhere, and the refusal is not
+  counted against the peer because it is not their doing. An unset admin key means
+  no control surface at all, and it is deliberately not a share key: peers hold
+  those, and a peer who can stop your host is worse than no control.
+- **`-paused`** starts a host paused, which makes a sharing schedule two cron
+  entries — pause at 9am, resume at 6pm.
+- `quota_used` and `quota_reset` per peer in `/bothy/usage`, so an owner watching a
+  peer stop can tell a spent budget from a crash.
+
+### Changed
+
+- **The limiter decides before it spends.** A request refused for one reason no
+  longer consumes another limit's allowance, so a peer turned away by a full host
+  does not also lose part of its budget for work that was never done.
+- The concurrency refusal now reads "the host is serving as many peer requests as it
+  allows right now", rather than "maximum concurrent requests": with a reserve, a
+  host at its peer maximum is not at its maximum.
+- All three `429` reasons — peer capacity, rate and budget — set `Retry-After`, not
+  only the rate one. Every one of them is a "come back later".
+- An `-owner-reserve` that leaves no room for peers is refused at startup rather
+  than started as a host that reports healthy while serving nobody.
+- `/bothy/healthz` and `/bothy/usage` report `owner_reserve`, `peer_slots`,
+  `peer_quota` and `paused`.
+
+### Added — experimental
+
+An experimental task runner, added as a plugin rather than a feature: it is
+build-tagged, it is in no release binary, and PROTOCOL.md does not cover it.
+Nothing above depends on it, and it depends on nothing above.
 
 - **`bothy solve` — a task runner, behind `-tags swarm`.** It reads a task file (a
 goal, a **mandatory** accept criterion, and a DAG), expands `same_as` copies into
@@ -33,13 +79,11 @@ nothing uses, `needs` requirements the runner cannot honour, and a misspelled
 field. All refused at load time, before any GPU is touched.
 - `make swarm` and `make swarm-check`, plus a CI job that first asserts a default
 build contains no trace of the swarm and then runs the loop end to end against the
-mock engine.
-
-### Notes
+mock engine.### Notes — experimental
 
 - `make check` does not test the swarm, deliberately: a contributor should not
-meet experimental code unless they asked for it. `make swarm-check` does, and CI
-runs it separately.
+  meet experimental code unless they asked for it. `make swarm-check` does, and CI
+  runs it separately.
 
 ## [0.2.0] - 2026-09-14
 

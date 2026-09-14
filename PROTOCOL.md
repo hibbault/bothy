@@ -29,7 +29,8 @@ client ──── discovery (registry) ──── host ──── inferenc
   ```
 
 - Status codes in use: `200`, `400` malformed request, `401` bad or missing key,
-  `404`, `405`, `429` limited, `502` upstream unreachable.
+  `404`, `405`, `429` limited, `502` upstream unreachable, `503` the owner has
+  paused sharing.
 - Responses are pretty-printed JSON. Clients must not depend on the whitespace.
 
 ## 1. Discovery (registry)
@@ -93,7 +94,7 @@ the first entry that suits it. Expired entries are omitted.
 | `digest` | string | no | SHA-256 of the weights. Empty means unknown |
 | `address` | string | yes | Opaque dial target. `host:port` today |
 | `host` | string | no | Human-readable identity for routing and logs |
-| `capacity` | int | no | Free request slots. Absent or `0` means unknown |
+| `capacity` | int | no | Free request slots for peers — slots kept for a host's owner are not counted, and are not offered. Absent or `0` means unknown |
 | `last_seen` | RFC3339 | set by registry | Ignored on input |
 
 ## 2. Host
@@ -107,7 +108,8 @@ So a container healthcheck needs no key.
 ```json
 { "ok": true, "host": "box", "engine_kind": "ollama", "address": "box:7777",
   "model_count": 2, "discovery": "http://registry:8080", "key_required": true,
-  "in_flight": 0, "capacity": 3, "max_concurrent": 4, "requests_per_minute": 0 }
+  "in_flight": 0, "capacity": 3, "max_concurrent": 4, "owner_reserve": 1,
+  "peer_slots": 3, "requests_per_minute": 0, "peer_quota": "", "paused": false }
 ```
 
 ### `GET /bothy/models` — auth required
@@ -126,14 +128,57 @@ Who is using the GPU.
 
 ```json
 { "host": "box", "address": "box:7777",
-  "in_flight": 1, "capacity": 3, "max_concurrent": 4, "requests_per_minute": 0,
+  "in_flight": 1, "capacity": 3, "max_concurrent": 4, "owner_reserve": 1,
+  "peer_slots": 3, "requests_per_minute": 0, "peer_quota": "200/1h",
+  "paused": false,
   "peers": [ { "peer": "alice", "in_flight": 1, "requests": 3, "limited": 0,
                "prompt_tokens": 6, "completion_tokens": 15,
                "response_bytes": 1476, "unmetered_responses": 0,
-               "last_seen": "2026-09-14T10:01:44Z" } ] }
+               "last_seen": "2026-09-14T10:01:44Z",
+               "quota_used": 3, "quota_reset": "2026-09-14T11:01:44Z" } ] }
 ```
 
 `peer` is the name from the host's key list, or `addr:<ip>` when the host is open.
+
+`quota_used` and `quota_reset` appear only when a per-peer budget is configured:
+how much of the current window that peer has spent, and when it turns over. A
+window starts at the peer's own first admitted request, so budgets do not all turn
+over at once. Without these two fields, an owner watching a peer stop has no way
+to tell a spent budget from a crash.
+
+### `POST /bothy/sharing` — the admin key, when one is set
+
+Pauses and resumes sharing, so that "not right now" does not have to mean stopping
+the process. Stopping works, but it also drops the host from the registry and
+leaves clients with a connection error instead of an answer.
+
+The admin key is deliberately **not** a share key. Share keys are handed to peers,
+and a peer who can stop your host is worse than no control surface at all. With no
+admin key configured the route answers `404`: there is no control endpoint here,
+and saying so is more use than implying one that refused you.
+
+```sh
+curl -X POST http://box:7777/bothy/sharing \
+  -H 'X-Bothy-Key: <admin key>' \
+  -d '{"paused": true}'
+```
+
+```json
+{ "paused": true, "since": "2026-09-14T10:31:07Z" }
+```
+
+While paused:
+
+- peer requests are refused with `503`, checked **before** the meter, because the
+  refusal is not the peer's doing and must not spend their budget;
+- the host **stops announcing itself**. There is no delete in the registry
+  protocol, so the mechanism is to stop saying it and let the entry expire on the
+  registry's own TTL. That is the point: clients route elsewhere rather than to a
+  host that will refuse them;
+- resuming announces again immediately, not at the next heartbeat.
+
+A pause is one boolean in one POST, so a sharing schedule is two cron entries.
+`-paused` starts a host paused, for the first of them.
 
 ### Everything else — auth required, proxied through
 
@@ -160,13 +205,34 @@ Three limits keep that a narrow exception rather than a licence to edit requests
 ### Refusals
 
 - `401` — missing or wrong key.
-- `429` — over the host's concurrency cap, or over this peer's rate limit. The
-  body carries the reason, and rate refusals also set `Retry-After` in seconds:
+- `429` — three reasons, and the body says which: over the host's **peer
+  capacity**, over this peer's **rate**, or over this peer's **budget**. All three
+  set `Retry-After` in seconds, because all three are a "come back later":
 
   ```json
-  { "error": { "message": "peer \"alice\" exceeded its request rate; retry in 20s",
+  { "error": { "message": "peer \"alice\" has used its budget of 200 requests per 1h0m0s; retry in 1h0m0s",
                "type": "bothy_error" } }
   ```
+
+- `503` — the owner has paused sharing. Unlike a `429` this is not something
+  waiting will fix, so there is no `Retry-After`, and a client should try another
+  host rather than retry this one.
+
+**Peer capacity is not the whole cap.** `max_concurrent` includes the slots kept
+back for the host's owner (`owner_reserve`, default 1), so a host with a cap of
+four refuses peers after three, and reports `capacity` as free *peer* slots. A
+reserved slot is never advertised, for the same reason it exists. A client needs
+to know none of this: a host whose last free slot is the owner's looks full.
+
+**A budget is not a rate.** A rate limit slows a peer down — 30 a minute permits
+43,200 requests a day, for ever. A budget stops them: 200 an hour permits 200, and
+then waits for the window to turn over. Budgets count **requests, not tokens**,
+and that is a
+limitation rather than a preference — tokens are known only after a response has
+been produced, so a token budget can only ever be enforced retrospectively, and an
+engine that reports no usage, which is allowed, would evade it entirely. Requests
+are counted before the work starts, so a request budget always binds. The tokens
+are still there in `/bothy/usage` for whoever is judging by them.
 
 Limits apply to the **proxied inference path only**. `/bothy/models` and
 `/bothy/usage` are metadata, cost no GPU time, and are deliberately not throttled.

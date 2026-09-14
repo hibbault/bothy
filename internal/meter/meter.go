@@ -193,27 +193,56 @@ func (s *Sniffer) Close() error { return s.rc.Close() }
 const (
 	ReasonConcurrency = "concurrency"
 	ReasonRate        = "rate"
+	ReasonQuota       = "quota"
 )
 
-// LimitError says why a request was refused. Concurrency is about the host,
-// rate is about the peer.
+// LimitError says why a request was refused. Concurrency is about the host;
+// rate and quota are about the peer.
 type LimitError struct {
 	Peer       string
 	Reason     string
 	RetryAfter time.Duration
+	// Quota and Window are set for ReasonQuota, so that a refusal can say what
+	// the budget was rather than only that it is gone.
+	Quota  int
+	Window time.Duration
 }
 
 func (e *LimitError) Error() string {
 	switch e.Reason {
 	case ReasonConcurrency:
-		return "host is already serving its maximum concurrent requests; retry shortly"
+		return "the host is serving as many peer requests as it allows right now; retry shortly"
 	case ReasonRate:
 		return fmt.Sprintf("peer %q exceeded its request rate; retry in %s",
 			e.Peer, e.RetryAfter.Round(time.Second))
+	case ReasonQuota:
+		return fmt.Sprintf("peer %q has used its budget of %d requests per %s; retry in %s",
+			e.Peer, e.Quota, e.Window, e.RetryAfter.Round(time.Second))
 	default:
 		return "request refused by the host limiter"
 	}
 }
+
+// Quota is a request budget over a window: a peer may make Requests requests,
+// and then waits for the window to turn over.
+//
+// It is a budget rather than a rate, which is the difference between slowing
+// somebody down and stopping them. A rate limit of 30 a minute permits 43,200
+// requests a day, for ever; a quota of 200 an hour permits 200, and then stops.
+//
+// It counts requests and not tokens, which is a limitation rather than a
+// preference. Tokens are known only after a response has been produced, so a
+// token budget can be enforced only retrospectively — and an engine that reports
+// no usage, which is allowed, would evade it entirely. Requests are counted
+// before the work starts, so a request budget always binds. The tokens are still
+// there in the usage report for the owner to judge by.
+type Quota struct {
+	Requests int
+	Window   time.Duration
+}
+
+// Enabled reports whether a quota is actually configured.
+func (q Quota) Enabled() bool { return q.Requests > 0 && q.Window > 0 }
 
 // Counter is what one peer has used since the process started.
 type Counter struct {
@@ -231,6 +260,12 @@ type PeerUsage struct {
 	Peer     string `json:"peer"`
 	InFlight int    `json:"in_flight"`
 	Counter
+	// QuotaUsed and QuotaReset appear only when a quota is configured: how much
+	// of the current window this peer has spent, and when it turns over. Without
+	// them an owner watching a peer stop has no way to tell a budget from a
+	// crash.
+	QuotaUsed  int    `json:"quota_used,omitempty"`
+	QuotaReset string `json:"quota_reset,omitempty"`
 }
 
 // Options configures the limiter.
@@ -239,6 +274,18 @@ type Options struct {
 	// serialises work anyway, so this is the limit that actually protects it.
 	// Zero means no cap.
 	MaxConcurrent int
+	// OwnerReserve is how many slots are kept for the machine's owner out of
+	// MaxConcurrent. Peers are capped at MaxConcurrent - OwnerReserve, so the
+	// person paying for the electricity always has headroom and never queues
+	// behind strangers.
+	//
+	// This is a guarantee of headroom, not a reading of what the owner is doing.
+	// Their own traffic never passes through here — they talk to their engine
+	// directly — and no portable engine API reports whether it is busy, so there
+	// is nothing to detect. A reservation is the honest shape available.
+	OwnerReserve int
+	// PeerQuota caps one peer's requests over a window. Zero means no budget.
+	PeerQuota Quota
 	// RequestsPerMinute caps one peer's request rate, with a burst of the same
 	// size. Zero means no cap.
 	RequestsPerMinute int
@@ -258,6 +305,12 @@ type peerState struct {
 	inFlight int
 	tokens   float64
 	refill   time.Time
+	// windowStart is when this peer's current budget window began, and
+	// windowUsed is what it has spent in it. The window starts at the peer's own
+	// first admitted request rather than on a shared clock, so budgets do not all
+	// turn over at once and "200 an hour" means an hour from when you started.
+	windowStart time.Time
+	windowUsed  int
 }
 
 // New returns a meter with the given limits.
@@ -272,17 +325,49 @@ func (m *Meter) Begin(peer string, now time.Time) error {
 	defer m.mu.Unlock()
 
 	state := m.peer(peer)
-	if m.opts.MaxConcurrent > 0 && m.inFlight >= m.opts.MaxConcurrent {
+	// Decide before consuming. A request refused by one limit must not spend
+	// another limit's allowance, or a peer turned away by a full host would also
+	// lose a request of its budget for work that was never done.
+	if err := m.checkLimits(peer, state, now); err != nil {
 		state.usage.Limited++
-		return &LimitError{Peer: peer, Reason: ReasonConcurrency}
+		return err
 	}
-	if !m.takeToken(state, now) {
-		state.usage.Limited++
-		return &LimitError{Peer: peer, Reason: ReasonRate, RetryAfter: m.retryAfter(state)}
-	}
+	m.consume(state, now)
 	m.inFlight++
 	state.inFlight++
 	return nil
+}
+
+// checkLimits decides whether a request may start, without spending anything.
+//
+// The order decides which refusal a peer is told about when more than one
+// applies. The host's own capacity comes first because it is not the peer's
+// doing, then the peer's budget, which is the more final of the two answers,
+// then its rate.
+func (m *Meter) checkLimits(peer string, state *peerState, now time.Time) error {
+	if m.opts.MaxConcurrent > 0 && m.inFlight >= m.peerSlots() {
+		return &LimitError{Peer: peer, Reason: ReasonConcurrency}
+	}
+	if q := m.opts.PeerQuota; q.Enabled() {
+		if !m.windowOpen(state, now) && state.windowUsed >= q.Requests {
+			return &LimitError{
+				Peer: peer, Reason: ReasonQuota,
+				RetryAfter: state.windowStart.Add(q.Window).Sub(now),
+				Quota:      q.Requests, Window: q.Window,
+			}
+		}
+	}
+	if !m.hasToken(state, now) {
+		return &LimitError{Peer: peer, Reason: ReasonRate, RetryAfter: m.retryAfterAt(state, now)}
+	}
+	return nil
+}
+
+// windowOpen reports whether the peer's budget window has turned over, in which
+// case its spend resets.
+func (m *Meter) windowOpen(state *peerState, now time.Time) bool {
+	q := m.opts.PeerQuota
+	return state.windowStart.IsZero() || now.Sub(state.windowStart) >= q.Window
 }
 
 // End releases the slot Begin reserved and records what the request cost.
@@ -308,20 +393,56 @@ func (m *Meter) End(peer string, usage Usage, reported bool, responseBytes int64
 	}
 }
 
-// Capacity reports how many requests the host could take right now. This is what
-// gets advertised, so clients route to whoever is least busy. Zero means either
-// fully busy or uncapped-and-therefore-unknown.
+// Capacity reports how many requests this host could take from peers right now.
+// This is what gets advertised, so clients route to whoever is least busy. Zero
+// means either fully busy or uncapped-and-therefore-unknown.
+//
+// It reports *peer* capacity, so a reserved slot is not counted and does not get
+// advertised. That is what makes the reservation propagate without a client
+// needing to understand it: a host with one slot free for its owner looks full
+// to everybody else.
 func (m *Meter) Capacity() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.opts.MaxConcurrent <= 0 {
 		return 0
 	}
-	free := m.opts.MaxConcurrent - m.inFlight
+	free := m.peerSlots() - m.inFlight
 	if free < 0 {
 		free = 0
 	}
 	return free
+}
+
+// Quota reports the per-peer budget this meter enforces, if any.
+func (m *Meter) Quota() Quota {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.opts.PeerQuota
+}
+
+// PeerSlots reports how many requests peers may have in flight at once, which is
+// the cap less the slots kept for the owner. Zero means uncapped.
+func (m *Meter) PeerSlots() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.opts.MaxConcurrent <= 0 {
+		return 0
+	}
+	return m.peerSlots()
+}
+
+// peerSlots is the concurrency available to peers. Callers hold the lock.
+//
+// A reserve that swallows the whole cap yields zero rather than a negative, and
+// the caller's `MaxConcurrent > 0` test means "no slots" rather than "no limit":
+// a misconfiguration must fail closed.
+func (m *Meter) peerSlots() int {
+	slots := m.opts.MaxConcurrent - m.opts.OwnerReserve
+	if slots < 0 {
+		return 0
+	}
+	return slots
 }
 
 // InFlight reports how many requests are being served right now.
@@ -336,9 +457,26 @@ func (m *Meter) Snapshot() []PeerUsage {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	quota := m.opts.PeerQuota
 	out := make([]PeerUsage, 0, len(m.peers))
 	for name, state := range m.peers {
-		out = append(out, PeerUsage{Peer: name, InFlight: state.inFlight, Counter: state.usage})
+		row := PeerUsage{Peer: name, InFlight: state.inFlight, Counter: state.usage}
+		if quota.Enabled() {
+			// A window that has already turned over is reported as spent-nothing
+			// rather than as whatever it held when it last ran.
+			if state.windowStart.IsZero() {
+				row.QuotaReset = ""
+			} else {
+				reset := state.windowStart.Add(quota.Window)
+				if !reset.After(time.Now()) {
+					row.QuotaReset = ""
+				} else {
+					row.QuotaUsed = state.windowUsed
+					row.QuotaReset = reset.UTC().Format(time.RFC3339)
+				}
+			}
+		}
+		out = append(out, row)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		left := out[i].PromptTokens + out[i].CompletionTokens
@@ -360,34 +498,54 @@ func (m *Meter) peer(name string) *peerState {
 	return state
 }
 
-// takeToken applies a token bucket: a peer may spend a minute's worth of
-// requests as a burst, then refills continuously.
-func (m *Meter) takeToken(state *peerState, now time.Time) bool {
+// consume spends what checkLimits allowed: one rate token and one request of the
+// peer's budget.
+func (m *Meter) consume(state *peerState, now time.Time) {
+	if m.opts.RequestsPerMinute > 0 {
+		state.tokens = m.available(state, now) - 1
+		state.refill = now
+	}
+	if q := m.opts.PeerQuota; q.Enabled() {
+		if m.windowOpen(state, now) {
+			state.windowStart = now
+			state.windowUsed = 0
+		}
+		state.windowUsed++
+	}
+}
+
+// available is how many tokens the peer's bucket would hold at now, without
+// spending any. A token bucket lets a peer spend a minute's worth of requests as
+// a burst, then refills continuously.
+func (m *Meter) available(state *peerState, now time.Time) float64 {
 	if m.opts.RequestsPerMinute <= 0 {
-		return true
+		return 1
 	}
 	rate := float64(m.opts.RequestsPerMinute)
 	if state.refill.IsZero() {
-		state.tokens = rate
-	} else {
-		state.tokens += now.Sub(state.refill).Minutes() * rate
-		if state.tokens > rate {
-			state.tokens = rate
-		}
+		return rate
 	}
-	state.refill = now
-	if state.tokens < 1 {
-		return false
+	tokens := state.tokens + now.Sub(state.refill).Minutes()*rate
+	if tokens > rate {
+		tokens = rate
 	}
-	state.tokens--
-	return true
+	return tokens
 }
 
-// retryAfter estimates how long until the peer's bucket holds one request again.
-func (m *Meter) retryAfter(state *peerState) time.Duration {
-	if m.opts.RequestsPerMinute <= 0 || state.tokens >= 1 {
+func (m *Meter) hasToken(state *peerState, now time.Time) bool {
+	return m.opts.RequestsPerMinute <= 0 || m.available(state, now) >= 1
+}
+
+// retryAfterAt estimates how long until the peer's bucket holds one request
+// again.
+func (m *Meter) retryAfterAt(state *peerState, now time.Time) time.Duration {
+	if m.opts.RequestsPerMinute <= 0 {
 		return 0
 	}
-	minutes := (1 - state.tokens) / float64(m.opts.RequestsPerMinute)
+	tokens := m.available(state, now)
+	if tokens >= 1 {
+		return 0
+	}
+	minutes := (1 - tokens) / float64(m.opts.RequestsPerMinute)
 	return time.Duration(minutes * float64(time.Minute))
 }

@@ -68,7 +68,8 @@ jobs:
           ./bin/bothy share -listen :19103 \
             -engine-url http://127.0.0.1:19101 \
             -discovery-url http://127.0.0.1:19102 \
-            -share-key ci-key -address 127.0.0.1:19103  > /tmp/host.log   2>&1 &
+            -share-key ci-key -admin-key ci-admin \
+            -address 127.0.0.1:19103                    > /tmp/host.log   2>&1 &
           ./bin/bothy connect -listen 127.0.0.1:19104 \
             -discovery-url http://127.0.0.1:19102 \
             -model llama3.1:8b -share-key ci-key        > /tmp/client.log 2>&1 &
@@ -108,6 +109,31 @@ jobs:
           # meter cannot see is the common case being invisible.
           curl -sf -H 'X-Bothy-Key: ci-key' http://127.0.0.1:19103/bothy/usage \
             | grep -q '"unmetered_responses": 0'
+
+          echo "--- the owner has a slot of their own ---"
+          # Default cap of 4 with the default reserve of 1: peers get 3, and the
+          # fourth is not advertised as available to anybody.
+          curl -sf http://127.0.0.1:19103/bothy/healthz | grep -q '"owner_reserve": 1'
+          curl -sf http://127.0.0.1:19103/bothy/healthz | grep -q '"peer_slots": 3'
+
+          echo "--- a share key cannot stop the host ---"
+          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:19103/bothy/sharing \
+            -H 'X-Bothy-Key: ci-key' -d '{"paused": true}')"
+          test "$code" = "401" || { echo "a peer's share key reached the control endpoint: $code"; exit 1; }
+
+          echo "--- and the admin key can, without stopping anything ---"
+          curl -sf -X POST http://127.0.0.1:19103/bothy/sharing \
+            -H 'X-Bothy-Key: ci-admin' -d '{"paused": true}' | grep -q '"paused": true'
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19104/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"paused"}]}')"
+          test "$code" = "503" || { echo "expected 503 through the client while paused, got $code"; exit 1; }
+          curl -sf -X POST http://127.0.0.1:19103/bothy/sharing \
+            -H 'X-Bothy-Key: ci-admin' -d '{"paused": false}' | grep -q '"paused": false'
+          curl -sf http://127.0.0.1:19104/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"resumed"}]}' \
+            | grep -q 'you-said'
 
           echo "all end-to-end checks passed"
 

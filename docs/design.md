@@ -115,6 +115,42 @@ of the proxy-not-reimplement decision. An engine that reports nothing is recorde
 as `unmetered_responses`, never as zero: the host cannot invent a count it was
 never given.
 
+### The owner keeps a slot
+
+The first version of sharing had a flaw that only shows up in use: `max_concurrent`
+was first-come-first-served, so four peers could occupy the whole GPU and the
+machine's owner — the person paying for the electricity — queued behind them. A
+host that makes its owner's machine worse is a host nobody leaves running.
+
+So peers may use `max_concurrent - owner_reserve` slots, and the reserve defaults
+to 1. One important thing it is **not**:
+
+> It is a guarantee of headroom, not a measurement of the owner's activity.
+
+The owner's own traffic never passes through the host — they talk to their engine
+directly — and no portable engine API reports whether an engine is busy. There is
+nothing to detect, so a reservation is the honest shape available. A design that
+claimed to "deprioritise peer traffic while the owner is active" would be inventing
+a signal it does not have.
+
+The reservation needs no cooperation from clients, which is the neat part. It is
+applied inside the same `capacity` figure a host already advertises, and a reserved
+slot is never advertised — so a host whose last free slot belongs to its owner
+simply looks full, and routing already does the right thing. A client has to
+understand nothing.
+
+Alongside it, a per-peer **budget** (`200/1h`) rather than only a rate. The
+difference is the difference between slowing somebody down and stopping them: a
+rate limit of 30 a minute permits 43,200 requests a day, for ever.
+
+The budget counts requests, not tokens, and it is worth being explicit that this is
+a limitation rather than a preference. Tokens are known only after a response has
+been produced, so a token budget can only ever be enforced retrospectively — and an
+engine that reports no usage, which is allowed, would evade it entirely. Requests
+are counted before the work starts, so a request budget always binds. That is the
+rule from the digest decision again: depend only on what you can check at the point
+it matters.
+
 ## Discovery, or: what a registry cannot do
 
 Discovery means one thing: **how does a client learn which host to talk to?** It
@@ -206,8 +242,33 @@ ever flows, hosts should bill users directly and Bothy should stay a protocol.
 - Does the client's local endpoint front one host or several? Today: one.
 - Transport security between peers. Today HTTP, which is fine on a private network
   and not fine on the open internet. A pinned certificate is the obvious next step.
-- What does `capacity` mean under load? Today it is free request slots, which says
-  nothing about speed.
+- What does `capacity` mean under load? Today it is free *peer* request slots,
+  refreshed on the heartbeat, which says nothing about speed — and `0` means both
+  "full" and "unknown", so an uncapped host sorts *last* behind a busy one. That
+  conflation is a bug waiting for a field to happen.
+- **Readiness, which is the availability problem nobody counts.** "Listed" is not
+  "resident": an engine unloads models when idle, so a request routed to a host
+  that merely *has* the weights can pay gigabytes off disk before the first token.
+  `/api/ps` for Ollama, per-slot state for llama.cpp, metrics for vLLM — three
+  different shapes, so the honest version advertises what can be cheaply learned
+  and claims nothing more.
+- **A refusal is not yet actionable, and that is the gap under all of this.** The
+  client re-resolves only on a *transport* failure. A `429` or `503` is a
+  successful response, so it is relayed to the caller and the client never tries
+  the host next in the registry. Routing happens once, off a number that can be a
+  heartbeat stale. Until refusals move a client along, "route to whoever is least
+  busy" is only true at connect time.
+- **Should there be a queue?** No, at the host, and not yet. The fleet is the
+  queue: if one host is busy, the right answer is another one, and queueing at the
+  first hides exactly the load signal that makes routing work. An unbounded queue
+  is a memory leak in a feature's costume, and holding a request open fights the
+  caller's own timeout. If it ever exists it has to be opt-in, bounded in depth and
+  in time, and still refuse with `429` when full.
+- **Fairness within a host and fairness across hosts are different problems.**
+  Within one host it is entirely implementable and trustworthy, because the host
+  hands out the peer keys — `alice` really is alice. Across hosts, "I contributed
+  30M tokens elsewhere" needs a signed receipt before anyone should believe it,
+  which is the same unsolved problem as paid hosts.
 - Should the registry sign entries, so clients can detect tampering by the registry
   itself?
 - How would a paid host prove what it served? This is the blocker for anything
