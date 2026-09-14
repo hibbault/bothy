@@ -10,6 +10,15 @@ a connection if you care.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] - 2026-09-14
+
+A host can finally meter the way people actually use a GPU. Interactive use
+arrives as a stream rather than a whole response, and an OpenAI-compatible engine
+reports no token usage on a stream unless the request asks for it — so the one
+case that mattered most was the one that went uncounted.
+
 ### Added
 
 - **The host asks its engine for streamed token usage.** An OpenAI-compatible
@@ -114,6 +123,7 @@ see [SECURITY.md](SECURITY.md).
 - The meter is on the seller's hardware and a digest is a claim rather than
   proof, which is why there is no payment anywhere in this release.
 
-[Unreleased]: https://github.com/hibbault/bothy/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/hibbault/bothy/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/hibbault/bothy/releases/tag/v0.2.0
 [0.1.1]: https://github.com/hibbault/bothy/releases/tag/v0.1.1
 [0.1.0]: https://github.com/hibbault/bothy/releases/tag/v0.1.0
