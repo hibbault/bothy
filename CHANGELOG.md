@@ -45,10 +45,15 @@ see [SECURITY.md](SECURITY.md).
 
 ### Notes
 
-- Three things ship unverified by their author because the development
-  environment had no Docker, no Python and no CI runner: the Docker image and
-  compose profiles, the Python example, and the CI workflow's YAML structure. The
-  commands inside the workflow were run by hand; the Go code is tested.
+- CI runs green on the first commit: gofmt, vet and tests, four cross-builds, and
+  an end-to-end job that starts all four roles as ordinary processes and asserts
+  a completion proxied through the client, a `401` without a share key, a refused
+  digest, and a metered usage row.
+- Two things still ship unverified by their author, because the development
+  environment had no Docker and no Python: the Docker image with its compose
+  profiles, and `examples/python/bothy_client.py`. Everything they touch on the
+  Go side is covered by the checks above — what is unproven is the packaging
+  around it, not the behaviour.
 - The meter is on the seller's hardware and a digest is a claim rather than
   proof, which is why there is no payment anywhere in this release.
 
