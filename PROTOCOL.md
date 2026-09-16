@@ -249,8 +249,11 @@ Three limits keep that a narrow exception rather than a licence to edit requests
 - `401` — missing or wrong key.
 - `404` — the host does not proxy this route. It is a route policy, not a
   resource, so it is decided before the meter.
-- `413` — the request body is larger than `max_body` (32 MiB by default). The
-  engine is never asked.
+- `413` — the request body is larger than `max_body` (32 MiB by default). A body
+  whose **declared** length is over the limit is refused before the engine is
+  asked at all. A chunked body has no length to check, so the limit is enforced as
+  it arrives: the caller still gets a `413` and the slot is still released, but the
+  engine has been dialled by then and is cut off rather than sent the whole body.
 - `429` — four reasons, and the body says which: over the host's **peer
   capacity**, over this peer's own **slot share**, over this peer's **rate**, or
   over this peer's **budget**. All four set `Retry-After` in seconds, because all

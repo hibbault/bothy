@@ -237,6 +237,16 @@ class FakeEngine:
         with self._lock:
             return list(self.paths), list(self.headers), list(self.hosts)
 
+    def bodies_seen(self) -> List[bytes]:
+        """What the engine was actually sent, byte for byte.
+
+        Apart from `seen`, because the promises about a body are about how much of
+        it arrived: a request the host cut off is a request whose body is shorter
+        than the one that was sent.
+        """
+        with self._lock:
+            return list(self.bodies)
+
     def stream_usage(self, gates: Optional[List[Optional[threading.Event]]] = None) -> None:
         """Answer with a stream whose final frame carries the usage.
 
@@ -817,7 +827,11 @@ class TestABodyOverTheLimitNeverReachesTheEngine(unittest.TestCase):
 
     def test_a_chunked_body_over_the_limit_is_refused_while_it_arrives(self):
         # The declared length is the free half of the limit; this is the half that
-        # catches a client which declared nothing.
+        # catches a client which declared nothing. It cannot be as strict, because
+        # a length nobody declared is only known by reading: the engine has already
+        # been dialled by the time the host can tell, so what is promised is the
+        # caller's 413, the slot, and that the engine is cut off rather than handed
+        # a body over the limit.
         fake = FakeEngine()
         self.addCleanup(fake.close)
         h = _test_host(engine_url=fake.url, share_keys="alice:key-a", max_body=64)
@@ -825,7 +839,12 @@ class TestABodyOverTheLimitNeverReachesTheEngine(unittest.TestCase):
         big = '{"model":"llama3.1:8b","prompt":"%s"}' % ("x" * 400)
         rec, _req = _call(h, "POST", "/v1/chat/completions", "key-a", big, chunked=True)
         self.assertEqual(rec.status, 413, "a chunked body over the limit got %d, want 413" % rec.status)
-        self.assertEqual(fake.seen()[0], [], "the engine was asked for a body it must never see")
+        self.assertEqual(h._meter.in_flight(), 0, "the slot was not released after a refused body")
+        bodies = fake.bodies_seen()
+        self.assertTrue(
+            all(len(body) < len(big.encode()) for body in bodies),
+            "the engine was sent a whole over-limit body: %r" % ([len(b) for b in bodies],),
+        )
 
         under, _req = _call(h, "POST", "/v1/chat/completions", "key-a", '{"model":"m"}', chunked=True)
         self.assertEqual(under.status, 200, "a chunked body under the limit was refused: %d" % under.status)
