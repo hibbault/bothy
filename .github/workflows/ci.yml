@@ -20,7 +20,7 @@ jobs:
         python: ["3.9", "3.11", "3.13"]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       # Nothing is installed, and that is the point: Bothy has no dependencies and
@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # No Docker on purpose: the four roles are ordinary processes, so this
