@@ -10,11 +10,85 @@ a connection if you care.
 
 ## [Unreleased]
 
-Two independent things: sharing a GPU no longer means giving it away, and there is
-a task runner behind a build tag.
+Three things: the implementation is Python now, sharing a GPU no longer means
+giving it away, and one command runs whatever a machine can be.
 
 ### Added
 
+- **A 429 moves the client along instead of being handed to the caller.** The
+  client used to resolve one host and stay there, so a host saying "full" was the
+  end of the request rather than the start of a search — a fleet with room in it
+  still looked busy, which is the one failure a fleet exists to avoid. `429`,
+  `503` and `502` now mean "ask somebody else": up to three hosts are tried in one
+  request, and the caller is told only when every host refused, with the shortest
+  `Retry-After` on offer. A refused host is left alone until its `Retry-After`
+  passes (capped at five minutes) and the list rotates, so a fleet takes turns.
+  A host that cannot be reached is a `502` rather than a wait, because waiting for
+  a broken fleet means waiting forever. A request body too large to hold in memory
+  is sent once and gets no retry; `/bothy/status` now lists the hosts the client
+  knows and which of them are being skipped, and why.
+- **`free` replaces `capacity` in the registry, and absent is not zero.** The old
+  field meant "free peer slots" and "unknown" with the same number, so an uncapped
+  host sorted *behind* a full one. `free` is omitted by a host that has nothing to
+  report, which is a different claim from reporting none — the design's own "bug
+  waiting for a field". Hosts that reported something sort first, most free first;
+  hosts that said nothing sort last but are still used.
+- **A config file, so limits survive a reboot as something you can read.** Every
+  setting already had an environment variable; now it can also be written in a
+  file, using the same names, at `%AppData%\bothy\config` (or the equivalent per
+  user config directory), and `bothy config init` writes a commented one to
+  uncomment from. Precedence is flag, then environment, then file, then built-in
+  default, implemented by the file supplying the defaults the flags are parsed
+  against — so flags and environment keep exactly the meaning they had. A file
+  that exists is read strictly: an unparseable line is an error naming the line,
+  and an unknown setting is an error naming it and suggesting the one that was
+  meant, because a typo that silently configures nothing is the failure mode a
+  file listing your limits must not have. `bothy config path` says which file is
+  in use. `-config`/`BOTHY_CONFIG` points elsewhere, and the file is written
+  `0600` since it may hold a share key.
+- **A host proxies inference and nothing else.** The engine's own control routes
+  are no longer reachable through a host: `POST /api/pull` fills its disk,
+  `DELETE /api/delete` removes its models, and with no share key — the supported
+  way to run a public host — reaching them took nothing but a port number. This
+  was demonstrated against a real Ollama before it was fixed: the delete route
+  reached the engine and came back with the engine's own "model not found", which
+  means a real model name would have been deleted. Anything outside the inference
+  routes now answers `404` without touching the engine. `-allow-routes "POST
+  /api/pull,GET /api/blobs/"` opens specific paths for an engine Bothy does not
+  know, and `-allow-all-routes` restores the old behaviour for a private network —
+  loudly, on startup.
+- **A per-peer slot cap.** `-peer-max-concurrent` bounds how many of the host's
+  slots one caller may hold at once. Without it the cap is first-come-first-served
+  and one client with parallel requests occupies the whole GPU while everybody
+  else is told the host is full — a taken machine rather than a shared one. The
+  refusal distinguishes the two cases, because "the host is full" is a reason to
+  try another host and "you already have your share" is a reason to wait.
+- **A time limit for one request.** `-max-request-time 10m` is the only lever that
+  bounds how long a single generation can hold the GPU. The caller gets a `504`
+  naming the limit, and the slot is released either way.
+- **A request body cap.** `-max-body`, 32 MiB by default, answers `413` before the
+  engine is asked, and catches a body that lies about its length or arrives
+  chunked. Prompts carrying images are legitimately megabytes, so the default is
+  generous; the point is that it is bounded at all, where before it was not.
+- **Every limit is now visible.** The host narrates each one at startup and
+  reports it in `/bothy/healthz` and `/bothy/usage` — including `routes`, so "can
+  a peer reach my engine's control API?" has an answer that is not shell history.
+- **The registry has a page.** `GET /` renders the live entries `/models` already
+  returns — model, host, address, free peer slots, an abbreviated digest, and how
+  long ago the last heartbeat was — so "is this registry doing anything?" does not
+  need `curl` and `jq`. It is a view of the contract rather than a second one: no
+  state, no query to express a lookup with, and no per-client logging, so it
+  cannot become the metadata leak the design warns about. `POST /register` is
+  still the only write.
+- **`bothy run` — one service, and no role to pick.** It probes for a local
+  engine: if one answers with a model it shares it *and* opens the borrowing
+  endpoint, because serving and borrowing are different ports and wanting both at
+  once is ordinary — your own model locally and somebody else's for what your GPU
+  cannot hold. No engine answering, no models, or no share key means it only
+  borrows; the last one is a refusal rather than a warning, because an automatic
+  mode must not open a GPU to anyone who can reach the port when nobody asked it
+  to. A failure in either half stops the process instead of leaving half a
+  service, and the error names which half failed.
 - **The owner keeps a slot.** `-owner-reserve` (default 1) holds that many of
   `-max-concurrent` out of peers' reach, so your own request never queues behind
   four strangers. It is a guarantee of headroom rather than a measurement of what
@@ -43,6 +117,50 @@ a task runner behind a build tag.
 
 ### Changed
 
+- **The implementation is Python, and the Go tree is gone.** The protocol was
+  always the contract rather than the program — PROTOCOL.md said as much from the
+  start — so replacing the implementation changes how Bothy is written and not
+  what it does. Each package was migrated one at a time and test first: the Go
+  test files were the specification, ported a test at a time, and a Go package was
+  deleted the moment its Python equivalent passed, so the tree never held two
+  implementations of anything. The wire contract, the `BOTHY_*` settings, the
+  config file and the command names are unchanged, and the Python modules carry
+  the Go comments that explained *why* each decision was made, because that was
+  the most valuable thing being ported. What changes for a user is on the outside:
+  there is no binary and no build step — `python -m bothy run` from a checkout, on
+  Python 3.9 or newer, with nothing installed — and the container image is an
+  interpreter beside the source rather than a static binary.
+- **`make check` now compiles and tests, and `make e2e` runs the stack.** The
+  end-to-end scenario that used to live inside the CI workflow is
+  [`scripts/e2e.sh`](scripts/e2e.sh): four real processes on real ports, the same
+  script CI runs, so a claim tested there is a claim anyone can check locally.
+  There is no formatter in the toolchain now that nothing is installed, which
+  CONTRIBUTING.md says out loud rather than leaving to be discovered.
+- **Release artifacts are gone with the binary.** A release is a tag: there is
+  nothing to cross-compile, so there are no per-platform downloads and no
+  `SHA256SUMS` to check.
+- **`-host https://box:7777` is no longer dialled in cleartext.** The client kept
+  the scheme when it asked a directly-addressed host for its model list and then
+  dropped it when storing the address for the proxy, which re-added `http://` — so
+  a TLS host was asked over TLS and served over HTTP, which is the worst of both.
+  The scheme is now part of the address that gets dialled.
+- **Servers bound IdleTimeout and MaxHeaderBytes.** `ReadHeaderTimeout` was the
+  only one set, which left keep-alive connections open indefinitely and Go's 1 MiB
+  default header limit in place. There is still deliberately no `WriteTimeout`:
+  responses stream for minutes and a write deadline would cut a long generation in
+  half.
+- **The client listens on `11223`, not on Ollama's `11434`.** Bothy sits beside a
+  local engine rather than impersonating it: an engine keeps its own port, the
+  host keeps `7777`, and the client takes one of its own. That is what lets one
+  machine serve its own model and use somebody else's in the same session, which
+  the old default made impossible — and it stops a machine that already runs an
+  engine from having to give the port up or fight over it. The cost is that a tool
+  which should use the fleet is pointed at `11223` instead of finding Bothy where
+  its Ollama used to be: one setting, in the tools that want the fleet, with the
+  rest left alone. The old default is gone rather than kept behind a flag, because
+  the number it used is exactly the collision this removes. `bothy run` reads
+  `BOTHY_HOST_LISTEN` and `BOTHY_CLIENT_LISTEN`, since one process cannot use one
+  `BOTHY_LISTEN` for two ports; a plain `BOTHY_LISTEN` still means the host's.
 - **The limiter decides before it spends.** A request refused for one reason no
   longer consumes another limit's allowance, so a peer turned away by a full host
   does not also lose part of its budget for work that was never done.
@@ -66,36 +184,19 @@ a task runner behind a build tag.
   registration expired on arrival, so the registry answered every lookup with
   nothing while reporting itself healthy.
 
-### Added — experimental
+### Removed
 
-An experimental task runner, added as a plugin rather than a feature: it is
-build-tagged, it is in no release binary, and PROTOCOL.md does not cover it.
-Nothing above depends on it, and it depends on nothing above.
-
-- **`bothy solve` — a task runner, behind `-tags swarm`.** It reads a task file (a
-goal, a **mandatory** accept criterion, and a DAG), expands `same_as` copies into
-independent attempts, runs the nodes whose dependencies are met, checks each one,
-and writes every artifact to disk addressed by the SHA-256 of its bytes. `-plan`
-validates and shows what would run without touching a GPU. See
-[docs/swarm.md](docs/swarm.md).
-- **Three checks**, all of which answer "did this work" without asking a model:
-`command` (a shell command, given the artifact's path in `$BOTHY_ARTIFACT`, with
-the whole process group killed on timeout), `exact`, and `agreement` (a count, not
-a vote).
-- **A refusal suite over the task file**, in the style the rest of the repo
-already uses: no accept criterion, a verify node that produces, a cycle, a copy
-that overrides half of what it copies, an ambiguous answer, work whose result
-nothing uses, `needs` requirements the runner cannot honour, and a misspelled
-field. All refused at load time, before any GPU is touched.
-- `make swarm` and `make swarm-check`, plus a CI job that first asserts a default
-build contains no trace of the swarm and then runs the loop end to end against the
-mock engine.
-
-### Notes — experimental
-
-- `make check` does not test the swarm, deliberately: a contributor should not
-  meet experimental code unless they asked for it. `make swarm-check` does, and CI
-  runs it separately.
+- **The experimental task runner (`bothy solve`), its package and its document.**
+  It was added as a plugin rather than a feature: behind a build tag, in no
+  release binary, and outside PROTOCOL.md. It was also the one thing that could
+  not survive the move to Python as it stood — a build tag has no Python
+  equivalent, and the Go package stopped building the moment the code it imported
+  became Python. Retiring it was the choice over porting ~2,300 lines of an
+  experiment that never shipped, and the reasoning is not lost: the file was
+  `docs/swarm.md` in git history, and the [roadmap](README.md#roadmap) now says
+  the idea is parked rather than disproved. Nothing outside it imported it, which
+  was the standard it had to keep: experimental work must be removable without
+  unpicking the project around it.
 
 ## [0.2.0] - 2026-09-14
 

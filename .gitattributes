@@ -1,0 +1,23 @@
+# Line endings, pinned so that a checkout cannot break the things that run.
+#
+# Git's autocrlf would otherwise hand a Windows checkout CRLF, and `make e2e` runs
+# `sh scripts/e2e.sh` — which fails on the carriage returns before it runs a single
+# check. The same applies to anything else a shell or a container reads.
+#
+# Normalising to LF in the working tree on every platform is the boring choice that
+# keeps one file usable everywhere: Python does not care either way, and nothing
+# here needs CRLF.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Genuinely binary, and must never be normalised.
+*.png binary
+*.jpg binary
+*.gguf binary
+*.safetensors binary

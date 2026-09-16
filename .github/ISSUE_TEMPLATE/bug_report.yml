@@ -55,7 +55,7 @@ body:
       placeholder: |
         make devnet
         docker compose stop host
-        curl http://127.0.0.1:11434/v1/chat/completions ...
+        curl http://127.0.0.1:11223/v1/chat/completions ...
     validations:
       required: true
 
@@ -73,7 +73,7 @@ body:
     attributes:
       label: Environment
       description: >
-        OS and architecture, how you installed it (binary, go install, container),
+        OS and architecture, how you installed it (from a checkout, container),
         and — for anything involving models — the engine, its version, and what
         `bothy` reports as the model's digest.
       placeholder: |

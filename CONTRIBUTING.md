@@ -12,11 +12,14 @@ whole system runs on a laptop.
 ```sh
 git clone https://github.com/hibbault/bothy
 cd bothy
-make check          # gofmt, vet, tests
-make devnet         # the whole thing in containers, no GPU needed
+make check          # byte-compile every module, then the tests
+make e2e            # the whole stack over real HTTP: no GPU, no Docker
+make devnet         # the same thing in containers
 ```
 
-Requires Go 1.22 or newer. Docker is optional, and only for the devnet.
+Requires Python 3.9 or newer, and nothing else: there are no dependencies, so
+there is no virtualenv to create and no lockfile to keep. Docker is optional, and
+only for the devnet.
 
 `make devnet`, `make real` and `make mismatch` set the compose profile
 themselves, so a fresh clone needs no `.env` — see `.env.example` if you want one
@@ -35,48 +38,53 @@ docker compose exec engine-ollama ollama pull llama3.1:8b
 
 | Path | What lives there |
 | --- | --- |
-| `cmd/bothy` | The binary. One command per role |
-| `internal/host` | `share`: announces models, meters, proxies to the engine |
-| `internal/client` | `connect`: resolves a host, verifies digests, serves locally |
-| `internal/discovery` | The registry service |
-| `internal/registry` | The entry type, the TTL store, and the registry client |
-| `internal/engine` | Adapters that describe an engine's models and digests |
-| `internal/meter` | Usage counting, the response sniffer, limits |
-| `internal/mockengine` | A fake engine, so the stack runs with no GPU |
-| `internal/digest` | Hashing weights files, with a cache |
-| `internal/httpx` | Shared HTTP helpers |
-| `internal/swarm` | Experimental and build-tagged: the task runner. Not in a default build, not in any release |
-| `examples/python` | A client in another language, proving the protocol is the contract |
+| `bothy/cli.py` | The command line. One command per role |
+| `bothy/app.py` | `run`: both roles in one process, chosen once at startup |
+| `bothy/host.py` | `share`: announces models, meters, proxies to the engine |
+| `bothy/client.py` | `connect`: resolves a host, verifies digests, serves locally |
+| `bothy/discovery.py` | The registry service |
+| `bothy/registry.py` | The entry type, the TTL store, and the registry client |
+| `bothy/engine.py` | Adapters that describe an engine's models and digests |
+| `bothy/meter.py` | Usage counting, the response sniffer, limits |
+| `bothy/mockengine.py` | A fake engine, so the stack runs with no GPU |
+| `bothy/digest.py` | Hashing weights files, with a cache |
+| `bothy/httpx.py` | Shared HTTP helpers: routing, auth, streaming, serving |
+| `bothy/config.py`, `model.py`, `errors.py` | Settings, the shared vocabulary, the error base |
+| `scripts/e2e.sh` | The whole stack over real ports — the same script CI runs |
+| `examples/python` | A second implementation of the protocol, in another process |
 
-`internal/` is not a public API. Nothing outside the module can import it, and
-that is deliberate: none of these packages are promises yet.
+`bothy/` is not a public API. It is an application rather than a library: the
+modules are split along the seams this design needed, not along lines anyone
+promised to keep stable, and importing them from outside the project is not
+supported.
 
 ## Ground rules
 
 **Standard library only, on purpose.** Bothy has zero dependencies. That is what
-keeps "install this next to your Ollama" to a single static binary, and it is the
-reason the project is pleasant to build anywhere. A new dependency needs to be
-justified in an issue first, and the bar is high.
+keeps "install this next to your Ollama" to copying a directory and having an
+interpreter on the machine, and it is the reason the project is pleasant to work
+on anywhere. A new dependency needs to be justified in an issue first, and the bar
+is high.
 
 **Tests are for behaviour, especially failure paths.** The interesting tests in
 this repo are the ones that assert a *refusal*: digest mismatches, a peer over
 its limit, a stream that arrives split at an awkward byte boundary. A change that
 alters what Bothy refuses should come with a test that says so.
 
-**`gofmt`, `go vet` and `go test ./...` must pass.** `make check` runs all three.
+**`make check` must pass.** It byte-compiles every module and runs the whole
+suite. Nothing is installed, so nothing formats or lints for you: matching the
+code around you is the formatter.
 
-**The experimental swarm stays opt-in.** Everything in `internal/swarm` and
-`cmd/bothy/solve.go` is behind `-tags swarm`. A default `make build` has no trace
-of it, no release artifact contains it, and `make check` deliberately does not test
-it — `make swarm-check` does, and CI runs that as a separate job. If you touch it,
-run both. It also has to stay removable: deleting `internal/swarm` and
-`cmd/bothy/solve.go` must leave the project whole, so nothing outside them may
-import it.
+**Experiments live outside the product.** Anything speculative belongs behind its
+own entry point rather than woven through the roles, so that dropping it leaves the
+project whole. The task runner that used to live here was retired for exactly that
+reason: nothing imported it, so removing it was a deletion rather than surgery.
 
 **Small, focused changes.** One idea per pull request.
 
-**Don't commit generated files.** `/bin` is ignored, and so is the `.freebuff/`
-directory, which is personal agent scaffolding rather than part of the project.
+**Don't commit generated files.** `__pycache__` is ignored, and so is the
+`.freebuff/` directory, which is personal agent scaffolding rather than part of
+the project.
 
 ## Trying the failure paths
 
@@ -95,16 +103,17 @@ verification without downloading the same model twice.
 
 ## Adding support for an engine
 
-The seam is one interface, in `internal/engine`:
+The seam is one interface, in `bothy/engine.py`:
 
-```go
-type Lister interface {
-    ListModels(ctx context.Context) ([]model.Model, error)
-    Kind() string
-}
+```python
+class Lister:
+    """Reports the models an engine can serve, with a digest for each."""
+
+    def list_models(self) -> List[Model]: ...
+    def kind(self) -> str: ...
 ```
 
-Implement it, add a case to `New`, and document the probe in
+Implement it, add a case to `engine.new`, and document the probe in
 [PROTOCOL.md](PROTOCOL.md#4-what-bothy-expects-of-an-engine). The engine's HTTP
 API is not part of Bothy's protocol — the host adapts to the engine, never the
 reverse — so an adapter only ever needs to read a model list.
@@ -115,9 +124,9 @@ digest.
 
 ## Writing an implementation in another language
 
-Bothy is HTTP/JSON, and [PROTOCOL.md](PROTOCOL.md) is the contract. The Go
-implementation is one implementation, not the definition, so a Python host and a
-Go client interoperate fine.
+Bothy is HTTP/JSON, and [PROTOCOL.md](PROTOCOL.md) is the contract. The
+implementation in this repository is one implementation, not the definition, so a
+host written here and a client written anywhere else interoperate fine.
 
 `examples/python/bothy_client.py` is a dependency-free client that speaks the
 protocol, and is the model to follow: if your implementation disagrees with that

@@ -10,232 +10,37 @@ permissions:
 
 jobs:
   check:
-    name: format, vet, test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - run: go mod download
-      - run: make check
-
-  cross-build:
-    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    name: python ${{ matrix.python }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { goos: linux, goarch: amd64 }
-          - { goos: linux, goarch: arm64 }
-          - { goos: darwin, goarch: arm64 }
-          - { goos: windows, goarch: amd64 }
+        # 3.9 is the floor the package claims, and the newest is where a future
+        # deprecation would show up first.
+        python: ["3.9", "3.11", "3.13"]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-python@v5
         with:
-          go-version-file: go.mod
-          cache: true
-      # "Install is one binary" is a claim about the product, so it gets a test.
-      - name: cross compile
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-        run: go build -trimpath ./...
+          python-version: ${{ matrix.python }}
+      # Nothing is installed, and that is the point: Bothy has no dependencies and
+      # no build step, so this job is also the assertion that neither has crept
+      # in. The suite either runs on a bare interpreter or it does not run.
+      - run: make check
 
   end-to-end:
     name: end to end over real HTTP
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-python@v5
         with:
-          go-version-file: go.mod
-          cache: true
-      - run: make build
-      # No Docker here on purpose: the four roles are ordinary processes, so this
-      # exercises the real path in seconds and needs nothing installed.
-      - name: serve, discover, and call through the client
-        run: |
-          set -euo pipefail
-
-          ./bin/bothy mock      -listen :19101 -name ci   > /tmp/mock.log   2>&1 &
-          ./bin/bothy discovery -listen :19102            > /tmp/disc.log   2>&1 &
-          sleep 1
-          ./bin/bothy share -listen :19103 \
-            -engine-url http://127.0.0.1:19101 \
-            -discovery-url http://127.0.0.1:19102 \
-            -share-key ci-key -admin-key ci-admin \
-            -address 127.0.0.1:19103                    > /tmp/host.log   2>&1 &
-          ./bin/bothy connect -listen 127.0.0.1:19104 \
-            -discovery-url http://127.0.0.1:19102 \
-            -model llama3.1:8b -share-key ci-key        > /tmp/client.log 2>&1 &
-          sleep 2
-
-          echo "--- registry ---"
-          curl -sf http://127.0.0.1:19102/models | grep -q '"llama3.1:8b"'
-          curl -sf http://127.0.0.1:19102/models | grep -q '"digest"'
-
-          echo "--- a request through the client reaches the engine ---"
-          reply="$(curl -sf http://127.0.0.1:19104/v1/chat/completions \
-            -H 'content-type: application/json' \
-            -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"ci"}]}')"
-          echo "$reply"
-          echo "$reply" | grep -q 'you-said'
-
-          echo "--- the engine is never reachable without the key ---"
-          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19103/v1/models)"
-          test "$code" = "401" || { echo "expected 401 without a key, got $code"; exit 1; }
-
-          echo "--- a pinned digest that cannot match must stop the client ---"
-          if ./bin/bothy connect -listen 127.0.0.1:19105 \
-               -discovery-url http://127.0.0.1:19102 -model llama3.1:8b \
-               -share-key ci-key -expected-digest sha256:deadbeef; then
-            echo "the client started despite a digest mismatch"; exit 1
-          fi
-
-          echo "--- usage was metered, per peer ---"
-          curl -sf -H 'X-Bothy-Key: ci-key' http://127.0.0.1:19103/bothy/usage | grep -q '"peer": "default"'
-
-          echo "--- and a streamed reply is counted, not merely noticed ---"
-          curl -sfN http://127.0.0.1:19104/v1/chat/completions \
-            -H 'content-type: application/json' \
-            -d '{"model":"llama3.1:8b","stream":true,"messages":[{"role":"user","content":"streamed"}]}' \
-            > /dev/null
-          # Streaming is how most interactive use arrives, so a stream that the
-          # meter cannot see is the common case being invisible.
-          curl -sf -H 'X-Bothy-Key: ci-key' http://127.0.0.1:19103/bothy/usage \
-            | grep -q '"unmetered_responses": 0'
-
-          echo "--- the owner has a slot of their own ---"
-          # Default cap of 4 with the default reserve of 1: peers get 3, and the
-          # fourth is not advertised as available to anybody.
-          curl -sf http://127.0.0.1:19103/bothy/healthz | grep -q '"owner_reserve": 1'
-          curl -sf http://127.0.0.1:19103/bothy/healthz | grep -q '"peer_slots": 3'
-
-          echo "--- a share key cannot stop the host ---"
-          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:19103/bothy/sharing \
-            -H 'X-Bothy-Key: ci-key' -d '{"paused": true}')"
-          test "$code" = "401" || { echo "a peer's share key reached the control endpoint: $code"; exit 1; }
-
-          echo "--- and the admin key can, without stopping anything ---"
-          curl -sf -X POST http://127.0.0.1:19103/bothy/sharing \
-            -H 'X-Bothy-Key: ci-admin' -d '{"paused": true}' | grep -q '"paused": true'
-          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19104/v1/chat/completions \
-            -H 'content-type: application/json' \
-            -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"paused"}]}')"
-          test "$code" = "503" || { echo "expected 503 through the client while paused, got $code"; exit 1; }
-          curl -sf -X POST http://127.0.0.1:19103/bothy/sharing \
-            -H 'X-Bothy-Key: ci-admin' -d '{"paused": false}' | grep -q '"paused": false'
-          curl -sf http://127.0.0.1:19104/v1/chat/completions \
-            -H 'content-type: application/json' \
-            -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"resumed"}]}' \
-            | grep -q 'you-said'
-
-          echo "all end-to-end checks passed"
-
-      # PROTOCOL.md claims that another language can implement this, which is a
-      # slogan until something other than the Go binary actually does it. The
-      # example is run against the same live stack the Go steps just used.
-      - name: the Python example talks to the same stack
-        run: |
-          set -euo pipefail
-          py=examples/python/bothy_client.py
-
-          echo "--- it reads what the host serves, with digests ---"
-          python3 "$py" models --host 127.0.0.1:19103 --key ci-key | grep -q 'llama3.1:8b'
-
-          echo "--- and it is refused without a key ---"
-          if python3 "$py" models --host 127.0.0.1:19103 >/dev/null 2>&1; then
-            echo "the Python client was not refused without a key"; exit 1
-          fi
-
-          echo "--- it sends a completion directly to the host ---"
-          python3 "$py" chat --host 127.0.0.1:19103 --key ci-key \
-            --model llama3.1:8b --prompt "from python" | grep -q 'you-said'
-
-          echo "--- and it refuses weights it was not promised ---"
-          if python3 "$py" chat --host 127.0.0.1:19103 --key ci-key \
-               --model llama3.1:8b --prompt "no" \
-               --expected-digest sha256:deadbeef; then
-            echo "the Python client ran despite a digest mismatch"; exit 1
-          fi
-
-          echo "the Python client agrees with the Go implementation"
-
-  swarm:
-    # The swarm is a plugin, not a feature: build-tagged, in no release binary,
-    # outside PROTOCOL.md. It is checked here so that it cannot rot, and kept out
-    # of `make check` so that a contributor never meets it uninvited.
-    name: swarm (experimental, opt-in)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      # The claim is that a default build has no swarm in it. Saying so in a
-      # document is not the same as it being true, so it is asserted.
-      - name: a default build does not contain the swarm
-        run: |
-          set -euo pipefail
-          make build
-          if ./bin/bothy help 2>&1 | grep -q solve; then
-            echo "help mentions solve in a default build"; exit 1
-          fi
-          if ./bin/bothy solve 2>/dev/null; then
-            echo "solve runs in a default build"; exit 1
-          fi
-
-      - name: vet and test, tagged
-        run: make swarm-check
-
-      - name: the loop end to end against the mock engine
-        run: |
-          set -euo pipefail
-          make swarm
-
-          ./bin/bothy-swarm mock -listen :19201 -name ci > /tmp/mock.log 2>&1 &
-          sleep 1
-
-          # Two identical attempts and an agreement accept: the simplest task
-          # that is worth farming, and checkable without a GPU.
-          cat > /tmp/task.json <<'JSON'
-          { "goal": "two attempts that must agree",
-            "model": "llama3.1:8b",
-            "accept": { "type": "agreement", "nodes": ["attempt-1", "attempt-2"] },
-            "nodes": [
-              { "id": "attempt-1", "prompt": "name the capital of France",
-                "check": { "type": "command", "run": "grep -q 'you-said' \"$BOTHY_ARTIFACT\"" } },
-              { "id": "attempt-2", "same_as": "attempt-1" }
-            ] }
-          JSON
-
-          echo "--- the plan is readable without running anything ---"
-          ./bin/bothy-swarm solve -task /tmp/task.json -plan | grep -q 'attempt-2'
-
-          echo "--- the run is accepted ---"
-          ./bin/bothy-swarm solve -task /tmp/task.json \
-            -engine-url http://127.0.0.1:19201 -model llama3.1:8b -dir /tmp/bothy \
-            -json > /tmp/report.json
-          grep -q '"accepted": true' /tmp/report.json
-
-          echo "--- the artifacts are on disk, under their digests ---"
-          test -n "$(ls -A /tmp/bothy/artifacts)"
-          grep -q '"status": "ok"' /tmp/bothy/report.json
-
-          echo "--- a task with no accept criterion is refused, not run ---"
-          echo '{"goal":"g","nodes":[{"id":"a","prompt":"p"}]}' > /tmp/no-accept.json
-          if ./bin/bothy-swarm solve -task /tmp/no-accept.json 2>/dev/null; then
-            echo "a task with no accept criterion was run"; exit 1
-          fi
-
-          echo "the swarm agrees with its own documentation"
+          python-version: "3.12"
+      # No Docker on purpose: the four roles are ordinary processes, so this
+      # exercises the real path in seconds and needs nothing installed. The script
+      # is the same one anyone can run with `make e2e`, which is the only way a
+      # claim tested here stays true for someone working on it.
+      - run: make e2e
 
   devnet:
     name: docker compose devnet
@@ -254,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:11434/bothy/status >/dev/null 2>&1; then
+            if curl -fsS http://127.0.0.1:11223/bothy/status >/dev/null 2>&1; then
               echo "client up after ~$((i * 3))s"
               exit 0
             fi
@@ -271,7 +76,7 @@ jobs:
           # The host registers on a heartbeat, so the first request can arrive
           # before it has announced itself. Retry rather than flake.
           for i in $(seq 1 10); do
-            reply="$(curl -fsS http://127.0.0.1:11434/v1/chat/completions \
+            reply="$(curl -fsS http://127.0.0.1:11223/v1/chat/completions \
               -H 'content-type: application/json' \
               -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"devnet"}]}' \
               || true)"
@@ -302,10 +107,14 @@ jobs:
           curl -fsS -H 'X-Bothy-Key: dev-share-key' \
             http://127.0.0.1:7777/bothy/usage | grep -q '"peer": "default"'
 
-      - name: logs
-        if: failure()
-        run: docker compose logs --no-color
+      - name: the whole thing is still one image with no build step
+        run: |
+          set -euo pipefail
+          # The port's claim is that what runs is what you can read: the image is
+          # an interpreter and the source tree, with nothing compiled in it.
+          docker compose images | grep -q bothy
+          docker compose exec -T client python -c "import bothy; print(bothy.version)"
 
-      - name: tear down
+      - name: stop
         if: always()
         run: docker compose down -v

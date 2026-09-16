@@ -2,8 +2,8 @@
 """Talk to Bothy from Python, with no dependencies.
 
 Nothing here is privileged: Bothy is HTTP/JSON, so this script is an
-implementation of PROTOCOL.md rather than a wrapper around the Go binary. Use it
-as a starting point for tooling, or as the shape of a Python host.
+implementation of PROTOCOL.md rather than a wrapper around the service itself. Use
+it as a starting point for tooling, or as the shape of a Python host.
 
 Requires Python 3.8+. Standard library only — no pip install.
 
@@ -23,7 +23,7 @@ Requires Python 3.8+. Standard library only — no pip install.
       --expected-digest sha256:1111111111111111111111111111111111111111111111111111111111111111
 
   # Or point at the local client endpoint instead of a host
-  ./bothy_client.py chat --host 127.0.0.1:11434 --model llama3.1:8b --prompt "hi"
+  ./bothy_client.py chat --host 127.0.0.1:11223 --model llama3.1:8b --prompt "hi"
 """
 
 import argparse
@@ -223,7 +223,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
 
     def common(p):
-        p.add_argument("--host", default="127.0.0.1:11434",
+        p.add_argument("--host", default="127.0.0.1:11223",
                        help="host (or the local client endpoint) to talk to")
         p.add_argument("--key", help="share key, if the host requires one")
 

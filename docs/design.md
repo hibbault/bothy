@@ -21,9 +21,11 @@ the people who have them. The friction in the obvious fix — "just share your
 box" — is not compute, it is *coordination*: exposing a port, agreeing which
 model, proving the weights match, not getting your GPU pinned by one person.
 
-The design goal that follows is: **nobody should have to change their tools.**
-That single constraint explains most of the decisions below, including why the
-client listens on the port Ollama already uses.
+The design goal that follows is: **an engine you already run keeps working
+exactly as it does now.** That single constraint explains most of the decisions
+below, including why Bothy has ports of its own instead of borrowing the port
+your engine is listening on — taking a port is a change to your tools whichever
+direction it is made in.
 
 ## What Bothy is not
 
@@ -45,13 +47,25 @@ The host forwards every request it does not handle itself straight to the engine
 and the client does the same to the host.
 
 This is the highest-leverage decision in the codebase. It means streaming works
-by construction rather than by careful implementation, every OpenAI and Ollama
-endpoint works the day it ships upstream, and the only engine-specific code is a
+by construction rather than by careful implementation, the endpoints a caller
+needs work the day they ship upstream, and the only engine-specific code is a
 small lister that answers "what models do you have, and what are their digests?"
 
-The cost is that Bothy mostly does not understand request bodies it proxies.
-Counting tokens has to be done by observing responses — see metering below. That
-is a real cost, and it is still much smaller than reimplementing an API.
+There is a limit on it, and it was learned the hard way. The first version
+forwarded *every* path, which reads as future-proofing and is really handing out
+the engine's whole API — including `DELETE /api/delete` and `POST /api/pull`,
+which are not inference and are not things a stranger should reach. On a private
+network that is a social contract; on the open internet, with or without a share
+key, it is a remote-delete for a host's models. So the proxy now allows the
+inference routes and refuses the rest with a `404`, and widening it is explicit
+(`-allow-routes`, or `-allow-all-routes` for a network you control). The honest
+version of "proxy, don't reimplement" is *proxy everything a caller needs, and
+name the boundary* — not "proxy everything and hope".
+
+The cost of proxying is that Bothy mostly does not understand request bodies it
+forwards. Counting tokens has to be done by observing responses — see metering
+below. That is a real cost, and it is still much smaller than reimplementing an
+API.
 
 There is exactly one exception, and it is worth naming rather than leaving to be
 discovered in the diff. An OpenAI-compatible engine reports no usage on a stream
@@ -66,13 +80,56 @@ not silently change what a caller asked for — so the moment a caller has an
 opinion, the rewrite stops. If a second exception ever seems necessary, that is
 the moment to reconsider the decision rather than add another.
 
-### The client keeps Ollama's port
+### Bothy has ports of its own, and your engine keeps its
 
-The client listens on `127.0.0.1:11434` by default. A machine with no GPU quietly
-*becomes* an Ollama as far as every editor, extension and CLI is concerned.
+The first version pointed the client at `127.0.0.1:11434` — Ollama's port — so
+that a machine with no GPU *became* an Ollama as far as every editor and CLI was
+concerned. It was a good trick and it was the wrong shape, for three reasons.
 
-Any other port would work identically and be worth far less, because every tool
-would need reconfiguring. A local-first default is the whole pitch in one number.
+A machine that already runs an engine has to give its port up or fight over it.
+Impersonation only works while it is exact, and the moment a tool asks for
+something Bothy cannot fake, the failure reads as Ollama being broken. And it
+made serving and borrowing mutually exclusive on one machine, which is the case
+that matters most: the person with a GPU is usually also the person who wants a
+bigger model than that GPU can hold.
+
+So the ports are separate, and none of them is taken:
+
+| Port | What it is |
+| --- | --- |
+| `11223` | the client's local endpoint — how you borrow |
+| `7777` | the host — how others reach your engine |
+| `11434` | the engine's own port, untouched |
+
+The cost is honest and small: a tool that should use the fleet is pointed at
+`11223` rather than finding Bothy where its Ollama used to be. That is one
+setting, in the tools that want the fleet, and the tools that don't are left
+exactly as they were — which is the "nobody changes their tools" goal read more
+carefully than the first version read it. What it buys is that Bothy and an
+engine coexist on one machine, and that one machine can serve and borrow at the
+same time.
+
+### A refusal moves the request along
+
+The first version resolved one host and stayed there, which made "route to
+whoever is least busy" true only at connect time. A `429` is a *successful*
+response — the host answered, politely, that it would not — so it was relayed to
+the caller and the next host was never asked. A fleet with room in it still looked
+busy, which is the whole failure mode a fleet exists to avoid.
+
+So the choice of host moved out of the Director, which runs once, and into the
+transport, which runs per attempt. `429`, `503` and `502` now mean "ask somebody
+else": the client tries the next entry for that model, up to three in one request,
+and the caller is told only when every host refused — with the shortest wait on
+offer. A refused host is skipped until its `Retry-After` passes, capped at five
+minutes, and the list rotates so a fleet takes turns.
+
+Two consequences worth naming, because both are limits rather than features. A
+request body large enough that holding it in memory is not worth it is sent once,
+so it gets no retry — retrying would mean buffering megabytes to make it possible.
+And a transport failure is not a refusal: nothing reachable is reported as a
+failure, not as a wait, because a caller that waits for a broken fleet waits
+forever.
 
 ### Identity is a digest, not a tag
 
@@ -239,25 +296,30 @@ ever flows, hosts should bill users directly and Bothy should stay a protocol.
 
 ## Open questions
 
-- Does the client's local endpoint front one host or several? Today: one.
+- Does the client's local endpoint front one host or several? Today: one at a
+  time, and it moves between them per request. A single request still goes to one
+  host, so a burst that arrives at once fills one host and refuses the rest rather
+  than spreading across a fleet that has room — that is the next step, and it only
+  became worth doing once refusals moved a client along.
 - Transport security between peers. Today HTTP, which is fine on a private network
   and not fine on the open internet. A pinned certificate is the obvious next step.
-- What does `capacity` mean under load? Today it is free *peer* request slots,
-  refreshed on the heartbeat, which says nothing about speed — and `0` means both
-  "full" and "unknown", so an uncapped host sorts *last* behind a busy one. That
-  conflation is a bug waiting for a field to happen.
+- What does `free` mean under load? It is free *peer* request slots, refreshed on
+  the heartbeat, and it says nothing about speed: a host with three free slots on a
+  slow card outranks a host with two on a fast one. It is also the host's own
+  claim, so a host that lies about it is chosen more often. The list is a hint, and
+  the refusal is the truth — which is why they are now separate fields: absent
+  means "did not say", which is not the same as zero.
 - **Readiness, which is the availability problem nobody counts.** "Listed" is not
   "resident": an engine unloads models when idle, so a request routed to a host
   that merely *has* the weights can pay gigabytes off disk before the first token.
   `/api/ps` for Ollama, per-slot state for llama.cpp, metrics for vLLM — three
   different shapes, so the honest version advertises what can be cheaply learned
   and claims nothing more.
-- **A refusal is not yet actionable, and that is the gap under all of this.** The
-  client re-resolves only on a *transport* failure. A `429` or `503` is a
-  successful response, so it is relayed to the caller and the client never tries
-  the host next in the registry. Routing happens once, off a number that can be a
-  heartbeat stale. Until refusals move a client along, "route to whoever is least
-  busy" is only true at connect time.
+- **How stale the list may be.** The client keeps the hosts it resolved and only
+  asks again when nothing it holds is usable, so a host that appeared a second ago
+  is invisible until then, and a host that just left is still in the rotation. A
+  refresh costs one request to the registry; the question is how often it is worth
+  paying for.
 - **Should there be a queue?** No, at the host, and not yet. The fleet is the
   queue: if one host is busy, the right answer is another one, and queueing at the
   first hides exactly the load signal that makes routing work. An unbounded queue
@@ -277,5 +339,5 @@ ever flows, hosts should bill users directly and Bothy should stay a protocol.
 ## Deliberate non-goals for v1
 
 Anonymity, payments, model parallelism, a public directory of strangers' GPUs, and
-a library API — `internal/` is deliberately unimportable, because none of these
-packages are promises.
+a library API — the modules in `bothy/` are not promises, and nothing outside the
+project should import them.

@@ -1,19 +1,17 @@
-# Build output
+# Build output and stray binaries. Nothing in this tree compiles — the
+# implementation is Python — so this is only here so that a scratch file cannot be
+# committed by accident.
 /bin/
-/bothy
 /dist/
 *.exe
 
-# Python bytecode from the example client
+# Bytecode, which is what running a checkout leaves behind instead of a build
+# directory.
 __pycache__/
 *.pyc
 
 # Personal agent scaffolding, not part of the project
 .freebuff/
-
-# What a swarm run leaves behind: artifacts and a report, both regenerable, and
-# both the kind of thing that should not be committed by accident.
-.bothy/
 
 # Local environment. Only .env.example belongs in git — a real .env is where
 # tokens and share keys end up, and a committed token is a leaked token.

@@ -12,12 +12,16 @@
 #       can watch the client refuse it instead of silently using them. The mock
 #       profile is included, so the first host still runs.
 #
-# The client publishes 127.0.0.1:11434 — Ollama's own port — so anything that
-# speaks OpenAI or Ollama can use somebody else's GPU with no config:
+# The client publishes 127.0.0.1:11223, Bothy's own port, so anything that
+# speaks OpenAI or Ollama can use somebody else's GPU by being pointed there:
 #
-#   curl http://127.0.0.1:11434/v1/chat/completions \
+#   curl http://127.0.0.1:11223/v1/chat/completions \
 #     -H 'content-type: application/json' \
 #     -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"hi"}]}'
+#
+# One command can run both halves — `bothy run` shares a local engine if it finds
+# one and always borrows — but the devnet keeps them as separate services so a
+# log line belongs to one role.
 
 name: bothy
 
@@ -172,19 +176,19 @@ services:
     <<: *bothy
     command: ["connect"]
     environment:
-      BOTHY_LISTEN: ":11434"
+      BOTHY_LISTEN: ":11223"
       BOTHY_DISCOVERY_URL: "http://discovery:8080"
       BOTHY_MODEL: "llama3.1:8b"
       BOTHY_SHARE_KEY: "dev-share-key"
     ports:
-      - "127.0.0.1:11434:11434"
+      - "127.0.0.1:11223:11223"
     depends_on:
       - discovery
       - host
     networks: [net]
     healthcheck:
       <<: *bothy-healthcheck
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:11434/bothy/status"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:11223/bothy/status"]
 
 networks:
   net:

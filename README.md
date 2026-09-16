@@ -1,7 +1,7 @@
 # Bothy
 
 [![ci](https://github.com/hibbault/bothy/actions/workflows/ci.yml/badge.svg)](https://github.com/hibbault/bothy/actions/workflows/ci.yml)
-[![go](https://img.shields.io/github/go-mod/go-version/hibbault/bothy)](go.mod)
+[![python](https://img.shields.io/badge/python-3.9%2B-blue)](bothy)
 [![license](https://img.shields.io/github/license/hibbault/bothy)](LICENSE)
 
 **Share a GPU, borrow a GPU.**
@@ -13,9 +13,12 @@ capacity make it available to people who have none, for free, and Bothy handles
 everything in between.
 
 You have a GPU and a model running in Ollama (or llama.cpp, or vLLM). A friend
-doesn't. They install Bothy, point their existing OpenAI client at `localhost`,
-and their tokens run on your GPU. No weights move. No model download on their
-side.
+doesn't. They install Bothy, point their OpenAI client at Bothy's port, and their
+tokens run on your GPU. No weights move. No model download on their side.
+
+Your own engine is not touched, not reconfigured, and not impersonated. Ollama
+keeps its port, Bothy has its own, and the two sit side by side — so the machine
+that shares a model can use somebody else's in the same session.
 
 ## Documentation
 
@@ -26,71 +29,94 @@ side.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, layout, and the ground rules |
 | [SECURITY.md](SECURITY.md) | The threat model, and how to report a problem |
 | [CHANGELOG.md](CHANGELOG.md) | What landed in each release |
-| [docs/swarm.md](docs/swarm.md) | Experimental and opt-in: farming *problems* rather than prompts. A plugin, in no release binary |
 
 ## Install
 
-No account, no installer, no runtime to set up. Pick whichever fits:
+No account, no installer, no build step, and nothing to install: Bothy is Python
+with no dependencies outside the standard library, so the source tree is what
+runs.
 
 ```sh
-# a static binary — linux/amd64 shown; arm64, macOS and Windows are built too
-curl -fsSL https://github.com/hibbault/bothy/releases/latest/download/bothy-linux-amd64 -o bothy
-chmod +x bothy
+git clone https://github.com/hibbault/bothy
+cd bothy
 
-# or, with a Go toolchain
-go install github.com/hibbault/bothy/cmd/bothy@latest
-
-# or, the container to run beside an existing Ollama
+# or the container, to run beside an existing Ollama
 docker build -t bothy .
 docker run --network host -e BOTHY_ENGINE_URL=http://localhost:11434 \
   -e BOTHY_SHARE_KEY=a-secret bothy share
 ```
 
-Sharing a GPU:
+Python 3.9 or newer, and nothing else — no dependencies, no compilation, no
+`pip install`. That is deliberate. A host runs on whatever machine already has
+the GPU, and installing something should not be the step between a person and
+sharing it.
+
+One command runs the whole thing and picks the roles for itself:
 
 ```sh
-bothy share -engine-url http://localhost:11434 -share-key a-secret
+python -m bothy run -share-key a-secret -discovery-url http://<registry>:8080
 ```
 
-Borrowing one:
+If a local engine answers with a model, that machine shares it **and** borrows;
+if none does, it only borrows. The rest of this file names the two halves
+explicitly, because a log line that belongs to one role is easier to read:
 
 ```sh
-bothy connect -discovery-url http://<registry>:8080 -model llama3.1:8b -share-key a-secret
+python -m bothy share   -engine-url http://localhost:11434 -share-key a-secret
+python -m bothy connect -discovery-url http://<registry>:8080 -model llama3.1:8b -share-key a-secret
 ```
 
-`bothy version` says which release you are running, and every release publishes
-`SHA256SUMS` alongside the binaries.
+`python -m bothy version` says which release you are running. A release is a tag
+rather than an artifact: what runs is the source tree, so there is nothing to
+verify beyond the commit you are on.
 
 ## The idea in one picture
 
 ```
-        Client machine (no GPU)                    Host machine (GPU)
+        Client machine                            Host machine (GPU)
 
   your OpenAI client                          inference engine
         │                                     (Ollama / llama.cpp / vLLM)
         ▼                                              ▲
-  127.0.0.1:11434 ──── network ───────►  :7777 ────────┘
+  127.0.0.1:11223 ──── network ───────►  :7777 ────────┘
    bothy connect                      bothy share
 ```
 
-Two roles, one binary:
+Two roles, one command:
 
-- **Host** (`bothy share`) runs next to your engine and *proxies* to it. It does
+- **Host** (`python -m bothy share`) runs next to your engine and *proxies* to it. It does
   not touch your models and never downloads anything. It announces what you can
   serve, requires a share key, meters who uses what, and caps how much of your
   GPU any one peer can occupy.
-- **Client** (`bothy connect`) opens a **local, OpenAI-compatible endpoint**.
+- **Client** (`python -m bothy connect`) opens a **local, OpenAI-compatible endpoint**.
   Point anything at it and the tokens run elsewhere:
 
   ```sh
-  curl http://127.0.0.1:11434/v1/chat/completions \
+  curl http://127.0.0.1:11223/v1/chat/completions \
     -H 'content-type: application/json' \
     -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"hi"}]}'
   ```
 
-The default port is **11434 — the port Ollama already uses**. A machine with no
-GPU quietly *becomes* an Ollama as far as every editor, extension and CLI is
-concerned. That is the whole pitch, in one default.
+And one command runs both, deciding for itself which the machine can be:
+
+```sh
+python -m bothy run
+```
+
+Three ports, one binary, none of them stolen:
+
+| Port | What it is |
+| --- | --- |
+| `11223` | the client's local endpoint — how you borrow |
+| `7777` | the host — how others reach your engine |
+| `11434` | your engine's own port, untouched |
+
+They are different on purpose. Serving and borrowing at the same time is an
+ordinary thing to want — your own model locally, somebody else's for what your
+GPU cannot hold — and two roles on one number cannot do that. Bothy also never
+pretends to be an engine: your editor keeps talking to Ollama where it always
+did, and the tools that should use the fleet are pointed at `11223` rather than
+told a lie about where the model is.
 
 ## Try the whole thing right now, with no GPU
 
@@ -111,13 +137,13 @@ $env:COMPOSE_PROFILES = "mock"; docker compose up --build
 discovery    :8080   registry — hosts announce, clients look up
 engine-mock  :11434  a fake engine that speaks enough OpenAI/Ollama to be useful
 host         :7777   shares the fake GPU
-client       :11434  borrows it; published on 127.0.0.1:11434 for you
+client       :11223  borrows it; published on 127.0.0.1:11223 for you
 ```
 
 Then talk to somebody else's GPU:
 
 ```sh
-curl http://127.0.0.1:11434/v1/chat/completions \
+curl http://127.0.0.1:11223/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"who answered this?"}]}'
 ```
@@ -126,7 +152,7 @@ The reply names the engine and the digest that produced it, so you can always
 tell whose GPU actually answered. Ask the client where it ended up:
 
 ```sh
-curl http://127.0.0.1:11434/bothy/status
+curl http://127.0.0.1:11223/bothy/status
 ```
 
 To use a real GPU instead, `make real` and pull a model into the Ollama container.
@@ -192,8 +218,10 @@ bytes and refusals, per peer.
 
 ```sh
 curl -H 'X-Bothy-Key: key-a' http://localhost:7777/bothy/usage
-``````json
-{ "in_flight": 1, "capacity": 3, "max_concurrent": 4, "owner_reserve": 1,
+```
+
+```json
+{ "in_flight": 1, "free": 3, "max_concurrent": 4, "owner_reserve": 1,
   "peer_slots": 3, "peer_quota": "200/1h", "paused": false,
   "peers": [
     { "peer": "alice", "requests": 3, "prompt_tokens": 6,
@@ -207,7 +235,7 @@ curl -H 'X-Bothy-Key: key-a' http://localhost:7777/bothy/usage
 The names come from per-peer keys:
 
 ```sh
-bothy share -share-keys alice:key-a,bob:key-b -max-concurrent 4
+python -m bothy share -share-keys alice:key-a,bob:key-b -max-concurrent 4
 ```
 
 Without them you get one row per caller address. That is still enough to see
@@ -215,7 +243,9 @@ that *someone* is pinning the GPU — just not who.
 
 ### Sharing should not mean giving your GPU away
 
-Four knobs, all optional, and the first one is on by default:
+Six knobs, all optional, and the first is on by default. They are what a public
+host has instead of a bouncer: identity does not bound what a stranger can cost
+you, limits do.
 
 - **`BOTHY_OWNER_RESERVE`** (default **1**) keeps that many of
   `BOTHY_MAX_CONCURRENT` out of peers' reach, so your own request never queues
@@ -226,12 +256,35 @@ Four knobs, all optional, and the first one is on by default:
 - **`BOTHY_MAX_CONCURRENT`** (default 4) caps requests in flight across the whole
   host. A GPU serialises work anyway, so this is the limit that actually protects
   it. Over it, the host answers `429` with a `Retry-After`.
+- **`BOTHY_PEER_MAX_CONCURRENT`** (default 0, off) caps how many of those slots
+  one caller may hold at once. Without it the cap is first-come-first-served: one
+  client with parallel requests takes the whole GPU and everybody else is told the
+  host is full. The refusal says which it is — "the host is full" is a reason to
+  try elsewhere, "you already have your share" is a reason to wait.
+- **`BOTHY_MAX_REQUEST_TIME`** (default 0, off, e.g. `10m`) stops a single request
+  at a wall-clock limit, and it is the only lever that bounds how long one
+  generation can occupy the GPU. The caller gets a `504` naming the limit; a reply
+  already streaming is simply cut off, because the headers are long gone.
+- **`BOTHY_MAX_BODY`** (default **32 MiB**) refuses a request body larger than
+  this with a `413`, before the engine is asked. Generous on purpose: a prompt
+  carrying images is legitimately megabytes.
 - **`BOTHY_PEER_QUOTA`** (default off) is a sustained budget, written as
   `count/period` — `200/1h` is 200 requests, and then wait for the window. This is
   what stops one person using your GPU all day: a rate limit only slows them down,
   because 30 a minute is still 43,200 a day.
 - **`BOTHY_MAX_REQUESTS_PER_MINUTE`** (default 0, off) caps one peer's request
   rate, with a burst of the same size.
+
+And the routes: **a host proxies inference and nothing else.** `POST /api/pull`,
+`DELETE /api/delete` and the rest of the engine's control API answer `404` and
+never reach the engine, because they are not inference and a stranger with a port
+number should not be able to delete your models. `-allow-routes` opens specific
+paths for an engine Bothy does not know; `-allow-all-routes` restores the old
+proxy-everything behaviour for a network you control.
+
+The host prints every one of these at startup, and they are all in
+`/bothy/healthz` and `/bothy/usage`, so "what did I actually configure?" has an
+answer that is not shell history.
 
 A budget counts **requests, not tokens**, and that is a limitation rather than a
 preference. Tokens are known only after a response has been produced, so a token
@@ -240,11 +293,12 @@ usage, which is allowed, would evade it entirely. Requests are counted before th
 work starts, so a request budget always binds. The tokens are still in the usage
 report for whoever is judging by them.
 
-Free slots are advertised in the registry as each host's `capacity`, which is how
-a client routes to whichever host is least busy rather than to whichever
+Free slots are advertised in the registry as each host's `free`, which is how a
+client routes to whichever host is least busy rather than to whichever
 registered first. That figure is free *peer* slots, so a host whose only free slot
 is the reserve looks full to everybody else — and a client needs to understand
-none of it.
+none of it. A host that reported no number at all is not treated as full: it is
+unknown, and unknown sorts after known rather than being excluded.
 
 ### "Not right now"
 
@@ -253,7 +307,7 @@ connected clients with a connection error rather than an answer. Set an admin ke
 and you can pause instead:
 
 ```sh
-bothy share -admin-key a-secret
+python -m bothy share -admin-key a-secret
 
 curl -X POST http://localhost:7777/bothy/sharing \
   -H 'X-Bothy-Key: a-secret' -d '{"paused": true}'
@@ -309,6 +363,21 @@ The registry in this repo solves (1) only. It is a bulletin board, not an
 authority: it cannot check that an address is up, and it cannot check that a
 digest is honest.
 
+Open it in a browser and you get the bulletin board itself — a read-only page at
+`/` listing what is live, who is serving it and how long ago they checked in:
+
+```
+bothy registry
+3 live entries · ttl 1m0s · registration is open
+
+MODEL             HOST     ADDRESS            FREE  DIGEST            LAST SEEN
+llama3.1:8b       box      box.example:7777      3  sha256:11111111…  4s ago
+qwen2.5:7b        hydra    hydra.lan:7777        0  sha256:22222222…  19s ago
+```
+
+It is a view of `/models`, not a second contract: no state, no query, no
+per-client logging. Anything that needs to depend on the data reads the JSON.
+
 **The ladder**, cheapest first — Bothy sits at rung 2, and rung 0 is fine for a
 long time:
 
@@ -325,15 +394,50 @@ Registration doubles as the heartbeat: a host re-`POST`s every
 being handed to clients forever. `BOTHY_REGISTRY_TOKEN` gates registration;
 without it, anyone reachable can publish entries.
 
+### Running a registry both sides can reach
+
+The registry is the one piece that has to be reachable by everybody: hosts
+announce to it, clients ask it who has a model. It is also the cheapest piece to
+host, because it holds nothing on disk — registrations live in memory and expire
+after `BOTHY_REGISTRY_TTL`, so a restart costs one heartbeat (20 seconds by
+default) and it is as good as new. Anywhere that runs a small container or
+process will do: a single Fly.io machine, Render's free web service, Cloud Run
+with `--max-instances=1`, an always-free VM, or the machine next to your GPU.
+
+Three things decide whether it works:
+
+- **One instance, never a fleet.** The store is in memory, so two copies would
+  each hold whichever hosts registered against them and a client's lookup would
+  miss the rest. Do not put it behind a round-robin load balancer, and do not let
+  it autoscale.
+- **A token, if it is on the internet.** Registration is open unless
+  `BOTHY_REGISTRY_TOKEN` is set, and an open registry lets anyone publish entries
+  that clients will then dial. Set the token and give it to your hosts with
+  `-register-token`.
+- **`$PORT` is honoured.** A platform that tells a process which port its traffic
+  arrives on gets what it asked for: an explicit `BOTHY_LISTEN` beats `$PORT`,
+  and `$PORT` beats the command's own default.
+
+```sh
+docker run -p 8080:8080 -e BOTHY_REGISTRY_TOKEN=a-secret bothy discovery
+```
+
+The harder half is the hosts, not the registry. A GPU behind a home router has to
+be dialled *by peers*, so `BOTHY_PUBLIC_ADDRESS` must be an address that resolves
+for them — a tunnel (Cloudflare Tunnel, Tailscale Funnel) or a port forward. An
+entry in the registry is only a phone number; Bothy cannot make the phone ring.
+
 ## Running without Docker
 
 ```sh
-go build ./cmd/bothy
+# nothing to build: run it from the checkout
+python -m bothy run     -share-key secret -discovery-url http://localhost:8080
 
-bothy discovery -listen :8080
-bothy share  -engine-url http://localhost:11434 -share-key secret \
+# or the halves separately
+python -m bothy discovery -listen :8080
+python -m bothy share  -engine-url http://localhost:11434 -share-key secret \
              -discovery-url http://localhost:8080 -address mybox.example:7777
-bothy connect -discovery-url http://localhost:8080 -model llama3.1:8b -share-key secret
+python -m bothy connect -discovery-url http://localhost:8080 -model llama3.1:8b -share-key secret
 ```
 
 Every flag has a `BOTHY_*` environment default, which is how the containers are
@@ -341,15 +445,23 @@ configured. Run any command with `-h`. The important ones:
 
 | Variable | Role | Meaning |
 | --- | --- | --- |
-| `BOTHY_LISTEN` | all | address to listen on |
+| `BOTHY_CLIENT_LISTEN` | run | where to borrow: `127.0.0.1:11223` |
+| `BOTHY_HOST_LISTEN` | run | where to share: `:7777` |
+| `BOTHY_SERVE` | run | share a local engine when one is found (default true) |
+| `BOTHY_LISTEN` | all | address to listen on; on `run` it means the host's |
 | `BOTHY_ENGINE_URL` | host | your engine's base URL |
 | `BOTHY_ENGINE_KIND` | host | `auto`, `ollama`, `openai`, `mock`, `static` |
 | `BOTHY_PUBLIC_ADDRESS` | host | the address to advertise — what peers dial, not what you listen on |
-| `BOTHY_SHARE_KEY` | both | key peers must present |
+| `BOTHY_SHARE_KEY` | both | the group secret: your host requires it, your client presents it |
 | `BOTHY_DISCOVERY_URL` | both | registry to announce to / look up in |
 | `BOTHY_SHARE_KEYS` | host | per-peer keys, `alice:key,bob:key`; wins over `BOTHY_SHARE_KEY` |
 | `BOTHY_MAX_CONCURRENT` | host | requests served at once (default 4; 0 = no cap) |
 | `BOTHY_OWNER_RESERVE` | host | of that cap, slots peers may not use (default 1) |
+| `BOTHY_PEER_MAX_CONCURRENT` | host | slots one caller may hold at once (default 0 = no separate cap) |
+| `BOTHY_MAX_REQUEST_TIME` | host | wall-clock limit for one request, e.g. `10m` (default 0 = no limit) |
+| `BOTHY_MAX_BODY` | host | largest request body in bytes (default 32 MiB; 0 = no cap) |
+| `BOTHY_ALLOW_ROUTES` | host | extra engine paths to proxy, e.g. `POST /api/pull` |
+| `BOTHY_ALLOW_ALL_ROUTES` | host | proxy every engine path, control routes included (default false) |
 | `BOTHY_PEER_QUOTA` | host | per-peer request budget as `count/period`, e.g. `200/1h` |
 | `BOTHY_MAX_REQUESTS_PER_MINUTE` | host | per-peer request rate (default 0 = no cap) |
 | `BOTHY_ADMIN_KEY` | host | key for `POST /bothy/sharing`; unset means no control surface |
@@ -357,11 +469,57 @@ configured. Run any command with `-h`. The important ones:
 | `BOTHY_MODEL` / `BOTHY_EXPECTED_DIGEST` | client | what to use, and what to insist on |
 | `BOTHY_HOST` | client | skip discovery and connect straight to an address |
 
+`python -m bothy run` reads `BOTHY_HOST_LISTEN` for the sharing half and
+`BOTHY_CLIENT_LISTEN` for the borrowing one, because one process running both
+cannot use one `BOTHY_LISTEN` for two ports. A plain `BOTHY_LISTEN` still means
+the host's, as it does for `python -m bothy share`.
+
+### Where settings live
+
+A flag is for the thing you are trying once. A config file is for the machine's
+standing policy — and on a host that shares a GPU for months, the limits are
+exactly the part worth writing down and reading back later.
+
+```sh
+python -m bothy config path      # which file is in use, and whether it exists
+python -m bothy config init      # write a commented one to uncomment from
+python -m bothy config init -force
+python -m bothy config path -config ./bothy.conf   # or point somewhere else
+```
+
+```ini
+# %AppData%\bothy\config — or ~/.config/bothy/config, Application Support on macOS
+BOTHY_ENGINE_URL = http://127.0.0.1:11434
+BOTHY_LISTEN = 127.0.0.1:7777
+BOTHY_PEER_MAX_CONCURRENT = 1     # one caller cannot take the whole GPU
+BOTHY_PEER_QUOTA = 200/1h         # and cannot use it all day
+BOTHY_MAX_REQUEST_TIME = 10m      # one generation, bounded
+```
+
+Keys are the environment variable names, so a setting has exactly one name
+everywhere it appears — in the file, the environment, `-h`, and this table.
+Precedence is **flag, environment, file, built-in default**, which is what lets a
+file hold the machine's policy while a container or a one-off command overrides
+part of it. `-config <path>` (or `BOTHY_CONFIG`) points at a different file.
+
+A file that exists is held to a standard, because the alternative is a typo that
+silently configures nothing. An unparseable line is an error naming the line
+number, and an unknown setting is an error naming it and suggesting what you
+meant:
+
+```
+bothy: ~/.config/bothy/config line 3: unknown setting "BOTHY_MAX_CONCURENT",
+did you mean BOTHY_MAX_CONCURRENT?
+```
+
+On Unix the file is created `0600`, since it may hold a share key.
+
 ## Writing your own host or client
 
-Bothy is HTTP/JSON, and [`PROTOCOL.md`](PROTOCOL.md) is the contract. The Go
-implementation in this repo is *one* implementation, not the definition, so a
-Python host and a Go client interoperate fine.
+Bothy is HTTP/JSON, and [`PROTOCOL.md`](PROTOCOL.md) is the contract. The
+implementation in this repository is *one* implementation, not the definition —
+nothing outside this file depends on it, and any language that speaks the protocol
+interoperates with it.
 
 [`examples/python/bothy_client.py`](examples/python/bothy_client.py) is a
 working client that speaks it — standard library only, no `pip install`:
@@ -372,38 +530,6 @@ python3 examples/python/bothy_client.py models --host box.example:7777 --key sec
 python3 examples/python/bothy_client.py chat   --host box.example:7777 --key secret \
     --model llama3.1:8b --prompt "who are you?" --stream
 ```
-
-## The swarm — experimental, opt-in, a plugin
-
-There is a second thing in this repository, and it is deliberately not a feature:
-an experimental task runner that fans a problem out into independent attempts,
-checks each one with something cheaper than producing it, and stops at the
-integrator, which is a person.
-
-It is in no release binary, and a default build does not contain it:
-
-```sh
-make swarm          # bin/bothy-swarm — the only artifact with `bothy solve` in it
-make swarm-check    # its tests, tagged. Deliberately not part of `make check`
-```
-
-```sh
-bothy-swarm solve -task task.json -plan   # validate and show what would run
-bothy-swarm solve -task task.json         # run it
-```
-
-Inference comes from an OpenAI-compatible endpoint, which is the same surface
-`bothy connect` exposes and `bothy share` proxies — so borrowing a GPU for a task
-is one flag, not a new protocol:
-
-```sh
-bothy-swarm solve -task task.json -engine-url http://127.0.0.1:11434 -share-key s
-```
-
-An accept criterion is mandatory. Work that cannot be checked cannot be farmed,
-so a task without one is refused rather than run, and `-plan` shows what would
-happen without touching a GPU. [docs/swarm.md](docs/swarm.md) has the design, the
-three checks, and an honest account of the parts that are still unsolved.
 
 ## What this gives you, and what it doesn't
 
@@ -432,7 +558,9 @@ Does not provide:
 2. ~~Digest matching enforced on both sides, with the mismatch path tested.~~ *(done)*
 3. ~~Metering, with concurrency caps and per-peer rate limits.~~ *(done)*
 4. Multiple models per host, surfaced through `/v1/models`.
-5. Multiple hosts per client, routed by model and then by load.
+5. ~~Multiple hosts per client, routed by model and then by load.~~ *(done — a
+   refusal moves the request to the next host, and hosts that reported free slots
+   are asked first)*
 6. Reachability: a relay or tunnel so home GPUs can be used without port
    forwarding. This is the hard half of discovery.
 7. **Open question: paid hosts.** The meter is the foundation, but payment needs
@@ -443,17 +571,22 @@ Does not provide:
    regulated money transmitter.
 8. Later: reputation, Tor transport, incentives.
 
-Outside all of that, and outside the versioning above: the
-[swarm](docs/swarm.md), which is a build-tagged plugin rather than part of the
-product. It ships in no release and PROTOCOL.md does not cover it.
+One idea is parked rather than disproved. **Farming problems rather than prompts**
+— fanning a checkable task out across borrowed GPUs — was built here once and then
+retired, because it never shipped and a build tag has no Python equivalent. The
+part worth keeping is the filter it turned on: only farm work whose answer can be
+checked more cheaply, and more trustworthily, than it can be produced. Its design
+note is `docs/swarm.md` in git history.
 
 ## Open decisions
 
-- Whether the client's local endpoint fronts one host or several in v1.
+- Whether one request should be spread across several hosts, and how a burst
+  arriving at once avoids filling one host while the fleet has room.
 - Transport between host and client: plain HTTP on a private network today;
   TLS with a pinned certificate before this is exposed to the open internet.
 - Where the share key lives and how it rotates.
-- What "capacity" means, so the registry can route by load rather than arrival.
+- What `free` really measures — it is free peer slots, so it says nothing about
+  speed, and it is the host's own claim.
 - Whether the registry should sign entries, so clients can detect tampering.
 
 ## Non-goals, for now
@@ -466,13 +599,15 @@ directory of strangers' GPUs.
 ```sh
 git clone https://github.com/hibbault/bothy
 cd bothy
-make check      # gofmt, vet, and the tests
-make devnet     # the whole stack in containers, no GPU required
+make check      # byte-compile every module, then the tests
+make e2e        # the whole stack over real HTTP: four processes, no GPU, no Docker
+make devnet     # the same stack in containers
 ```
 
-Go 1.22 or newer. Docker is optional and only needed for the devnet. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the layout, the ground rules, and how to
-extend it.
+Python 3.9 or newer. There are no dependencies to install, so there is no
+virtualenv to make and no lockfile to update. Docker is optional, and only for the
+devnet. See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout, the ground rules,
+and how to extend it.
 
 ## License
 

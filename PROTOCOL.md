@@ -1,11 +1,12 @@
 # Bothy wire protocol
 
 Bothy is three HTTP/JSON services, and this file is the contract between them.
-The Go implementation in this repo is *one* implementation, not the definition —
+The implementation in this repo is *one* implementation, not the definition —
 anything that speaks this protocol interoperates, in any language.
 
-Two useful things fall out of that. You can write a Python host and have Go
-clients use it. And you can replace any one piece without touching the others.
+Two useful things fall out of that. You can write a host in one language and have
+clients written in another use it. And you can replace any one piece without
+touching the others.
 
 ```
 client ──── discovery (registry) ──── host ──── inference engine
@@ -29,8 +30,9 @@ client ──── discovery (registry) ──── host ──── inferenc
   ```
 
 - Status codes in use: `200`, `400` malformed request, `401` bad or missing key,
-  `404`, `405`, `429` limited, `502` upstream unreachable, `503` the owner has
-  paused sharing.
+  `404`, `405`, `413` request body too large, `429` limited, `502` upstream
+  unreachable, `503` the owner has paused sharing, `504` the host's time limit for
+  one request was reached.
 - Responses are pretty-printed JSON. Clients must not depend on the whitespace.
 
 ## 1. Discovery (registry)
@@ -44,7 +46,7 @@ Auth: required only if the registry was started with a token.
 
 ```json
 { "entries": [ { "model": "llama3.1:8b", "digest": "sha256:1111...",
-                 "address": "box.example:7777", "host": "box", "capacity": 3 } ] }
+                 "address": "box.example:7777", "host": "box", "free": 3 } ] }
 ```
 
 Body is capped at 1 MiB. An empty `entries` array is a `400`.
@@ -58,7 +60,7 @@ Response `200`:
 Semantics that matter:
 
 - **Registering *is* the heartbeat.** There is no separate liveness call. Re-POST
-  at no more than a third of `ttl` (the Go host defaults to 20s against a 60s
+  at no more than a third of `ttl` (the host defaults to 20s against a 60s
   TTL). A host that stops registering expires and disappears from `/models`.
 - Entries are keyed by `(model, address)`, so re-registering refreshes rather
   than duplicates.
@@ -74,17 +76,31 @@ everything live.
 ```json
 { "entries": [ { "model": "llama3.1:8b", "digest": "sha256:1111...",
                  "address": "box.example:7777", "host": "box",
-                 "capacity": 3, "last_seen": "2026-09-14T10:01:44Z" } ] }
+                 "free": 3, "last_seen": "2026-09-14T10:01:44Z" } ] }
 ```
 
-Ordered by `capacity` descending, then `host`, then `model`, so a client can take
-the first entry that suits it. Expired entries are omitted.
+Ordered so a client can take the first usable entry: hosts that reported free
+slots first, most free first, then `host`, then `model`. Hosts that reported
+nothing come last, which is not a judgement — saying nothing is not a claim of
+being busy — but it is no reason to prefer them either.
 
 ### `GET /healthz`
 
 ```json
 { "ok": true, "live_entries": 2, "ttl": "1m0s" }
 ```
+
+### `GET /` — the registry for people
+
+HTML, read-only, showing the live entries `/models` already returns: model, host,
+address, free peer slots, an abbreviated digest, and how long ago the last
+heartbeat was. It exists so that "is this registry doing anything?" does not need
+`curl` and `jq`.
+
+It is a **view of the contract, not a second one**: no state, no query to express
+a lookup with, no per-client logging, and no auth beyond what `/models` already
+has. Anything that depends on the data reads the JSON above. Registration is
+still the only write, and it is still `POST /register`.
 
 ### The `Entry` object
 
@@ -94,7 +110,7 @@ the first entry that suits it. Expired entries are omitted.
 | `digest` | string | no | SHA-256 of the weights. Empty means unknown |
 | `address` | string | yes | Opaque dial target. `host:port` today |
 | `host` | string | no | Human-readable identity for routing and logs |
-| `capacity` | int | no | Free request slots for peers — slots kept for a host's owner are not counted, and are not offered. Absent or `0` means unknown |
+| `free` | int | no | Free request slots for peers at the last heartbeat — slots kept for a host's owner are not counted and are not offered. **Absent** means the host did not say, which is not the same as `0`: zero is a host that is full, absent is a host that did not report, such as one running without a cap |
 | `last_seen` | RFC3339 | set by registry | Ignored on input |
 
 ## 2. Host
@@ -108,8 +124,10 @@ So a container healthcheck needs no key.
 ```json
 { "ok": true, "host": "box", "engine_kind": "ollama", "address": "box:7777",
   "model_count": 2, "discovery": "http://registry:8080", "key_required": true,
-  "in_flight": 0, "capacity": 3, "max_concurrent": 4, "owner_reserve": 1,
-  "peer_slots": 3, "requests_per_minute": 0, "peer_quota": "", "paused": false }
+  "in_flight": 0, "free": 3, "max_concurrent": 4, "owner_reserve": 1,
+  "peer_slots": 3, "peer_max_concurrent": 1, "requests_per_minute": 0,
+  "peer_quota": "", "max_request_time": "10m0s", "max_body": 33554432,
+  "routes": "inference", "paused": false }
 ```
 
 ### `GET /bothy/models` — auth required
@@ -118,7 +136,7 @@ What this host serves, with digests. A client pointed straight at an address use
 this to learn what it can verify.
 
 ```json
-{ "host": "box", "address": "box:7777", "capacity": 3,
+{ "host": "box", "address": "box:7777", "free": 3,
   "models": [ { "name": "llama3.1:8b", "digest": "sha256:1111..." } ] }
 ```
 
@@ -128,9 +146,10 @@ Who is using the GPU.
 
 ```json
 { "host": "box", "address": "box:7777",
-  "in_flight": 1, "capacity": 3, "max_concurrent": 4, "owner_reserve": 1,
-  "peer_slots": 3, "requests_per_minute": 0, "peer_quota": "200/1h",
-  "paused": false,
+  "in_flight": 1, "free": 3, "max_concurrent": 4, "owner_reserve": 1,
+  "peer_slots": 3, "peer_max_concurrent": 1, "requests_per_minute": 0,
+  "peer_quota": "200/1h", "max_request_time": "10m0s", "max_body": 33554432,
+  "routes": "inference", "paused": false,
   "peers": [ { "peer": "alice", "in_flight": 1, "requests": 3, "limited": 0,
                "prompt_tokens": 6, "completion_tokens": 15,
                "response_bytes": 1476, "unmetered_responses": 0,
@@ -180,11 +199,34 @@ While paused:
 A pause is one boolean in one POST, so a sharing schedule is two cron entries.
 `-paused` starts a host paused, for the first of them.
 
-### Everything else — auth required, proxied through
+### Everything else — auth required, and inference only
 
-Any other path is forwarded to the engine, including `/v1/chat/completions`,
-`/v1/models` and Ollama's `/api/*`. Responses stream through unbuffered, and the
-presented key is stripped before forwarding so it never reaches the engine.
+A request for anything else is forwarded to the engine **if it is an inference
+route**, and answered `404` if it is not. Responses stream through unbuffered, and
+the presented key is stripped before forwarding so it never reaches the engine.
+
+The routes a host proxies:
+
+| Shape | Routes |
+| --- | --- |
+| OpenAI | `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /v1/models/…` |
+| Ollama | `POST /api/chat`, `POST /api/generate`, `POST /api/embed`, `POST /api/embeddings`, `POST /api/show`, `GET /api/tags`, `GET /api/ps`, `GET /api/version` |
+
+Everything else is refused, and the engine never hears about it. That matters
+most for an engine's own **control** routes, which are not inference: `POST
+/api/pull` fills a host's disk, `DELETE /api/delete` removes its models, and
+`POST /api/create` writes new ones. A host reachable by strangers cannot hand
+those out, and a `404` says "this host does not proxy that" without confirming
+what the engine behind it would have done.
+
+Two ways to widen it, both explicit:
+
+- `-allow-routes "POST /api/pull,GET /api/blobs/"` adds specific paths — a
+  trailing slash means the whole subtree, and a rule may name a method or apply
+  to all of them.
+- `-allow-all-routes` proxies everything, which is what Bothy did before it was
+  built for the open internet. It is for a network you control, and the host says
+  so on startup.
 
 **One request body is ever rewritten.** On `POST /v1/chat/completions` and
 `POST /v1/completions`, when the caller asked to stream and only then, the host
@@ -205,22 +247,34 @@ Three limits keep that a narrow exception rather than a licence to edit requests
 ### Refusals
 
 - `401` — missing or wrong key.
-- `429` — three reasons, and the body says which: over the host's **peer
-  capacity**, over this peer's **rate**, or over this peer's **budget**. All three
-  set `Retry-After` in seconds, because all three are a "come back later":
+- `404` — the host does not proxy this route. It is a route policy, not a
+  resource, so it is decided before the meter.
+- `413` — the request body is larger than `max_body` (32 MiB by default). The
+  engine is never asked.
+- `429` — four reasons, and the body says which: over the host's **peer
+  capacity**, over this peer's own **slot share**, over this peer's **rate**, or
+  over this peer's **budget**. All four set `Retry-After` in seconds, because all
+  four are a "come back later":
 
   ```json
   { "error": { "message": "peer \"alice\" has used its budget of 200 requests per 1h0m0s; retry in 1h0m0s",
                "type": "bothy_error" } }
   ```
 
+  The two capacity reasons mean different things to a client. **Peer capacity** is
+  the host being full, which is not the caller's doing and is a reason to try
+  another host. **Peer concurrency** is this caller already holding its share, and
+  resolves when one of its own requests finishes.
+
 - `503` — the owner has paused sharing. Unlike a `429` this is not something
   waiting will fix, so there is no `Retry-After`, and a client should try another
   host rather than retry this one.
+- `504` — the request outlived `max_request_time` and was stopped. It is the one
+  refusal that bounds how long a single generation can hold the GPU.
 
 **Peer capacity is not the whole cap.** `max_concurrent` includes the slots kept
 back for the host's owner (`owner_reserve`, default 1), so a host with a cap of
-four refuses peers after three, and reports `capacity` as free *peer* slots. A
+four refuses peers after three, and reports `free` as free *peer* slots. A
 reserved slot is never advertised, for the same reason it exists. A client needs
 to know none of this: a host whose last free slot is the owner's looks full.
 
@@ -239,13 +293,18 @@ Limits apply to the **proxied inference path only**. `/bothy/models` and
 
 ## 3. Client
 
-Default listener: `127.0.0.1:11434` — Ollama's own port, so existing tools need no
-reconfiguration.
+Default listener: `127.0.0.1:11223`, a port of Bothy's own.
+
+Deliberately **not** `11434`: an engine keeps its own port and Bothy sits beside
+it, rather than impersonating it. Serving is `7777` and borrowing is `11223`,
+which is what lets one machine do both at once — and why a tool that should use
+the fleet is pointed at Bothy's port instead of being told a lie about where the
+model is.
 
 ### `GET /bothy/status` — no auth
 
 ```json
-{ "listening": "127.0.0.1:11434", "discovery": "http://registry:8080",
+{ "listening": "127.0.0.1:11223", "discovery": "http://registry:8080",
   "requested_model": "llama3.1:8b", "expected_digest": "",
   "connected": true, "host": "box:7777", "model": "llama3.1:8b",
   "digest": "sha256:1111...", "digest_verified": false }
@@ -254,16 +313,39 @@ reconfiguration.
 `connected` is `false` until the first request triggers resolution. That is by
 design: a host that is not up yet must not stop the client from starting.
 
-### Everything else — proxied to the resolved host
+### Everything else — proxied to a host that will take it
 
-The client resolves once (from discovery, or from its configured address), then
-forwards. Any `Authorization` the local caller sent is replaced with the share
-key. Re-resolution happens automatically after an upstream failure.
+The client resolves the hosts offering the requested model (from discovery, or the
+one it was pointed at) and forwards to the first that will take the request. Any
+`Authorization` the local caller sent is replaced with the share key, per attempt.
+
+**A refusal is a reason to try the next host, not an answer for the caller.**
+
+- `429` and `503` are the host saying "not now" — over its cap, over this peer's
+  share of it, over a budget or a rate, or paused. `502` counts too: a host up
+  with an unreachable engine is no more use than a busy one.
+- The client tries the next entry for that model, up to three hosts in one
+  request, before the caller is told anything. The caller sees a refusal only when
+  every host refused, and then sees the one that asked for the **shortest wait**,
+  with its `Retry-After`.
+- A host that refused is not asked again until its `Retry-After` has passed, capped
+  at five minutes so a real "come back in an hour" does not leave a one-host client
+  looking broken. The candidate list rotates, so a fleet takes turns rather than
+  every client aiming at the same host.
+- A host that cannot be reached is skipped the same way, but is never reported to
+  the caller as a wait: nothing reachable is a `502`, not a `429`.
+- A request whose body is too large to hold in memory is sent once, since it
+  cannot be replayed. It still gets the host's refusal rather than a hang.
+
+`GET /bothy/status` reports the host in use and every host the client knows,
+including which are being skipped and why.
 
 **Digest rule.** With no expected digest, any host is accepted. As soon as one is
-configured, a host offering different weights is refused — at startup, and again
-on every re-resolution. A host that advertises *no* digest never satisfies a
-requirement; "unknown" must not read as "verified".
+configured, hosts offering different weights are skipped in favour of one that
+matches, and the client fails only when *no* host matches — one host serving
+something else is now a host to avoid rather than a reason to give up. A host that
+advertises *no* digest never satisfies a requirement; "unknown" must not read as
+"verified".
 
 ## 4. What Bothy expects of an engine
 
