@@ -5,12 +5,12 @@ One binary because the roles overlap: a person who shares a GPU is usually
 also the person who wants a client running, and shipping one artifact means
 installing Bothy is copying a file or pulling an image.
 
-Experimental commands are not in it. In Go they live behind a build tag and
-register themselves through experimentalCommand, so a default build has no
-trace of them -- see cmd/bothy/solve.go. Python has no build tags, so the
-equivalent guarantee is structural: nothing opt-in is imported here, so
-`bothy help` describes the whole binary and an unknown command is a usage
-error, which is what the Go build tag was protecting.
+Experimental commands are not in it, and the task runner that was the one is
+retired rather than ported: a build tag has no Python equivalent, so the
+guarantee is structural instead. Nothing opt-in is imported here, so `bothy help`
+describes everything the program can do and an unknown command is a usage error
+-- which is exactly what the build tag was protecting. The experiment's design
+note is in git history.
 """
 
 from __future__ import annotations

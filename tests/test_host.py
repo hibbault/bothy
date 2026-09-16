@@ -1,11 +1,12 @@
 """The share side: the allowlist, the meter, the proxy and the announce loop.
 
 Ported from the Go package's host_test.go, peers_test.go, inject_test.go,
-routes_test.go's cases, limits_test.go, owner_test.go and serve_test.go. Those
-tests were written around one idea that is worth keeping in the port: a good half
-of what a host promises is about what the *engine* does not see -- not a refused
-route, not a body over the limit, not a peer's share key -- so most of what is
-asserted here is what did not arrive, alongside the status the peer got.
+routes_test.go, limits_test.go, owner_test.go and serve_test.go -- all of them in
+git history now. Those tests were written around one idea worth keeping in the
+port: a good half of what a host promises is about what the *engine* does not see
+-- not a refused route, not a body over the limit, not a peer's share key -- so
+most of what is asserted here is what did not arrive, alongside the status the
+peer got.
 
 Two shapes of test live side by side, exactly as they did in Go. Most calls go
 straight through `Host.handler` with a recording writer, which is what makes a

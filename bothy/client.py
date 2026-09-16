@@ -48,7 +48,7 @@ DEFAULT_TIMEOUT = 20.0
 # that matters: a host that streams for ten minutes is not a host that has hung.
 DIAL_TIMEOUT = 30.0
 
-# The proxy side, from routing.go.
+# The proxy side: choosing a host for each attempt, and moving on when refused.
 #
 # The client used to resolve one host and stay there, which made "route to
 # whoever is least busy" true only at connect time: a 429 is a *successful*
@@ -725,8 +725,8 @@ def run(ctx=None, log: Optional[logging.Logger] = None, args: Optional[List[str]
 #
 # The two types and the four helpers below have no Go counterpart in name but do
 # in role: a `*http.Response` still on the wire, and the `io.ReadCloser` the
-# transport reads a body through. Everything else on this side of the file is
-# routing.go.
+# transport reads a body through. Everything else on this side of the file is the
+# routing itself.
 
 
 class _Upstream:

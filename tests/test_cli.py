@@ -5,10 +5,10 @@ stream a message lands on are part of the contract, and neither is reachable by
 calling a function. So every case below starts `python -m bothy` the way a shell
 would, and reads what it printed and what it exited with.
 
-The last two classes are the ones ported from internal/app. They are not about
-the process: what the one command decides is a decision, and a half that fails is
-a function that returns -- so they call `app` directly, with a lister and a logger
-that answer without a GPU.
+The last two classes came from the Go tree's `internal/app` (in git history).
+They are not about the process: what the one command decides is a decision, and a
+half that fails is a function that returns -- so they call `app` directly, with a
+lister and a logger that answer without a GPU.
 """
 
 from __future__ import annotations

@@ -9,10 +9,10 @@ updates:
     commit-message:
       prefix: "ci"
 
-  # Bothy has no Go dependencies, so this normally has nothing to do. It is here
-  # so that the day a dependency is justified in an issue, it arrives with an
-  # update path already wired up.
-  - package-ecosystem: gomod
+  # Bothy has no dependencies outside the standard library, so this normally has
+  # nothing to do. It is here so that the day one is justified in an issue, it
+  # arrives with an update path already wired up.
+  - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: weekly

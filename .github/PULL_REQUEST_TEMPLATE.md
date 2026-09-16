@@ -22,9 +22,9 @@ an honest "I could not verify the container build" is more useful than silence.
 
 ## Checklist
 
-- [ ] `make check` passes (gofmt, vet, tests)
+- [ ] `make check` passes (it byte-compiles every module, then runs the tests)
 - [ ] Behaviour changes come with a test — especially changes to what Bothy **refuses**
-- [ ] No new Go dependencies (or a linked issue where one was agreed)
+- [ ] No new dependencies (or a linked issue where one was agreed)
 - [ ] `PROTOCOL.md` and `docs/design.md` still describe what the code does
 - [ ] `CHANGELOG.md` updated if this is user-visible
 - [ ] No credentials, tokens or `.env` files in the diff

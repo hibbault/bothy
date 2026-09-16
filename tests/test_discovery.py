@@ -133,7 +133,7 @@ class _ServerTest(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
-# Ported from internal/discovery/discovery_test.go
+# Ported from the Go package's discovery_test.go (in git history)
 # --------------------------------------------------------------------------
 
 
@@ -233,7 +233,7 @@ class TestHealthReportsLiveEntries(_ServerTest):
 
 
 # --------------------------------------------------------------------------
-# Ported from internal/discovery/run_test.go
+# Ported from the Go package's run_test.go (in git history)
 # --------------------------------------------------------------------------
 
 
@@ -344,7 +344,8 @@ class TestRunDefaultsToTheEnvironment(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
-# Ported from internal/discovery/run_test.go: the body limit and the answer
+# Ported from the Go package's run_test.go (in git history): the body limit and
+# the answer
 # --------------------------------------------------------------------------
 
 
@@ -440,7 +441,7 @@ class TestReRegistrationIsTheHeartbeat(_ServerTest):
 
 
 # --------------------------------------------------------------------------
-# Ported from internal/discovery/index_test.go
+# Ported from the Go package's index_test.go (in git history)
 # --------------------------------------------------------------------------
 
 
@@ -580,7 +581,7 @@ class TestShortDigestNeverLooksBlank(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
-# The page: the assertions index_test.go does not make. The values on it come
+# The page: the assertions the ported tests do not make. The values on it come
 # from whoever registered, and a host that reported nothing is the one case the
 # page can get wrong in a way nobody notices.
 # --------------------------------------------------------------------------
@@ -691,8 +692,8 @@ class TestIndexSaysWhenRegistrationIsOpen(_ServerTest):
 
 
 class TestIndexHelpers(unittest.TestCase):
-    # No Go counterpart: index_test.go covers the page and the two renderers it
-    # leans on, and this is the third one -- the cell that has to say "unknown"
+    # Nothing to port here: the tests above cover the page and the two renderers
+    # it leans on, and this is the third one -- the cell that has to say "unknown"
     # rather than a number nobody reported.
     def test_free_cell_never_invents_a_number(self):
         self.assertEqual(discovery._free_cell(registry.Entry(model="m", address="a:1")), "unknown")

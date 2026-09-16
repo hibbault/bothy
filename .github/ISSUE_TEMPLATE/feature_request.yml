@@ -11,9 +11,9 @@ body:
         documented decision is mistaken, say which one and why — that is a
         complete proposal.
 
-        Two things the project has deliberately said no to so far: any Go
-        dependency, and payments. If you want to reopen one of those, that is
-        fine, but argue it rather than assuming it.
+        Two things the project has deliberately said no to so far: any dependency
+        outside the standard library, and payments. If you want to reopen one of
+        those, that is fine, but argue it rather than assuming it.
 
   - type: textarea
     id: problem

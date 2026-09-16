@@ -90,7 +90,8 @@ class Config:
     paused: bool = False
     stream_usage: bool = False
     # allow_all_routes and allow_routes widen what the host proxies to the
-    # engine. The default is the inference allowlist; see host/routes.go for why.
+    # engine. The default is the inference allowlist; see the allowlist section
+    # in bothy/host.py for why.
     allow_all_routes: bool = False
     allow_routes: List[host.RouteRule] = field(default_factory=list)
     # max_body caps a proxied request body in bytes.

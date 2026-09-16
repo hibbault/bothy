@@ -70,7 +70,7 @@ _SHARING_BODY_LIMIT = 4 << 10
 
 
 # ---------------------------------------------------------------------------
-# routes.go -- what the proxy will forward
+# The route allowlist -- what the proxy will forward
 # ---------------------------------------------------------------------------
 
 # DefaultMaxBody is how large a proxied request body may be. It is generous on
@@ -256,7 +256,7 @@ class Config:
 
 
 # ---------------------------------------------------------------------------
-# peers.go -- the key a request presents, resolved to a name
+# Peers -- the key a request presents, resolved to a name
 # ---------------------------------------------------------------------------
 
 
@@ -349,7 +349,7 @@ def peer_from(req: httpx.Request) -> str:
 
 
 # ---------------------------------------------------------------------------
-# inject.go -- asking the engine for usage on streamed replies
+# Streamed usage -- asking the engine for usage on streamed replies
 # ---------------------------------------------------------------------------
 #
 # Streamed replies are where the meter goes blind.
@@ -860,7 +860,7 @@ def _parse_engine_url(text: str) -> urllib.parse.SplitResult:
 
 
 # ---------------------------------------------------------------------------
-# host.go -- the host itself
+# The host itself
 # ---------------------------------------------------------------------------
 
 
