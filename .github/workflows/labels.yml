@@ -18,7 +18,7 @@ jobs:
     name: apply the label set
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # gh is preinstalled on the runner and authenticates with the workflow's
       # own token, so none of this needs a personal access token with extra
